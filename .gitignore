@@ -8,8 +8,8 @@ package-lock.json
 # Environment variables
 # ==========================
 # .env
-# .env.local
-# .env.*.local
+.env.local
+.env.*.local
 
 # ==========================
 # Logs
@@ -21,15 +21,15 @@ yarn-debug.log*
 yarn-error.log*
 
 
-docs/
-scripts/
+# docs/
+# scripts/
 # ==========================
 # Database files
 # ==========================
-*.sql
-*.sqllite
+# *.sql
+# *.sqllite
 # Keep .db files
-!*.db
+# !*.db
 
 # ==========================
 # Uploads - keep folder and first layer
@@ -75,6 +75,13 @@ build/
 *.tar.gz
 
 # ==========================
+# Frontend build (public folder contents)
+# ==========================
+# Keep public folder structure but ignore build files
+public/*
+!public/.gitkeep
+
+# ==========================
 # Test coverage
 # ==========================
 coverage/
@@ -88,7 +95,8 @@ back.zip
 # ==========================
 # Files/folders to ignore
 # ==========================
-# docs/
+docs/
+scripts/
 s_appointments.js
 
 # ==========================

@@ -97,7 +97,7 @@ app.use(requestLogger);
 app.use('/api/', apiLimiter);
 
 // Static files
-
+// Serve uploaded files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
   setHeaders: (res, path, stat) => {
     // Allow your frontend to load images cross-origin
@@ -105,6 +105,25 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
     res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
   }
 }));
+
+// Serve frontend static files (production)
+// Frontend build should be placed in 'public' folder
+const publicPath = path.join(__dirname, 'public');
+const fs = require('fs');
+
+if (fs.existsSync(publicPath)) {
+  // Serve static assets (JS, CSS, images, etc.)
+  app.use(express.static(publicPath, {
+    maxAge: '1y', // Cache static assets for 1 year
+    etag: true,
+    lastModified: true
+  }));
+  
+  logger.info('Frontend static files enabled from public folder');
+} else {
+  logger.warn('Public folder not found. Frontend static files will not be served.');
+  logger.warn('To enable frontend serving: Create "public" folder and place frontend build files there.');
+}
 
 // Import routes
 const userRoutes = require('./routes/r_user');
@@ -184,7 +203,26 @@ app.use('/api', rbacRoutes);
 // App (mobile) routes (no CSRF)
 app.use('/api/app', appAuthRoutes);
 
-// 404 handler
+// SPA Fallback: Serve index.html for all non-API routes (production only)
+// This allows React Router to handle client-side routing
+if (fs.existsSync(publicPath)) {
+  app.get('*', (req, res, next) => {
+    // Skip API routes and uploads
+    if (req.path.startsWith('/api') || req.path.startsWith('/uploads')) {
+      return next();
+    }
+    
+    // Serve index.html for all other routes (SPA routing)
+    const indexPath = path.join(publicPath, 'index.html');
+    if (fs.existsSync(indexPath)) {
+      res.sendFile(indexPath);
+    } else {
+      next();
+    }
+  });
+}
+
+// 404 handler (for API routes and if SPA fallback fails)
 app.use(notFoundHandler);
 
 // CSRF error handler (before global error handler)

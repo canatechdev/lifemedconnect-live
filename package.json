@@ -6,6 +6,10 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
+    "build": "echo 'Backend build complete. Place frontend build in ./public folder'",
+    "build:frontend": "cd ../crm-frontend && npm run build",
+    "copy:frontend": "node scripts/copy-frontend-build.js",
+    "deploy": "npm run build:frontend && npm run copy:frontend && echo ' Deployment ready! Frontend build copied to ./public folder'",
     "test": "jest --coverage",
     "test:watch": "jest --watch",
     "seed": "node scripts/seeders/index.js",
