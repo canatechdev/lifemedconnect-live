@@ -1,0 +1,332 @@
+/**
+ * App (Technician) Appointment Routes
+ * Simple GET APIs for assigned and upcoming appointments
+ * Uses JWT token to derive technician user id
+ */
+
+const express = require('express');
+const router = express.Router();
+
+const { verifyToken } = require('../../lib/auth');
+const ApiResponse = require('../../lib/response');
+const logger = require('../../lib/logger');
+const { updateWithApproval, formatApprovalResponse } = require('../../lib/approvalHelper');
+const appointmentService = require('../../services/app/s_app_appointments');
+const coreAppointments = require('../../services/appointments');
+const { uploadLimiter } = require('../../middleware/security');
+const { mixedUpload } = require('../../lib/multer');
+const { processSingleFile } = require('../../lib/fileUpload');
+
+// GET /api/app/appointments
+// List all appointments assigned to the technician (with tests limited to technician)
+router.get('/appointments', verifyToken, async (req, res) => {
+    try {
+        const page = parseInt(req.query.page, 10) || 1;
+        const limit = parseInt(req.query.limit, 10) || 10;
+        const search = req.query.q || '';
+
+        const result = await appointmentService.listTechnicianAppointments({
+            userId: req.user.id,
+            page,
+            limit,
+            search,
+            upcomingOnly: false
+        });
+
+        return ApiResponse.paginated(res, result.data, result.pagination);
+    } catch (error) {
+        logger.error('App list appointments (technician) failed', { error: error.message, userId: req.user?.id });
+        return ApiResponse.appError(res, 'Failed to fetch appointments', 500);
+    }
+});
+
+// GET /api/app/appointments/upcoming
+// List upcoming appointments (confirmed_date tomorrow onwards) assigned to technician
+router.get('/appointments/upcoming', verifyToken, async (req, res) => {
+    try {
+        const page = parseInt(req.query.page, 10) || 1;
+        const limit = parseInt(req.query.limit, 10) || 10;
+        const search = req.query.q || '';
+
+        const result = await appointmentService.listTechnicianAppointments({
+            userId: req.user.id,
+            page,
+            limit,
+            search,
+            upcomingOnly: true
+        });
+
+        return ApiResponse.paginated(res, result.data, result.pagination);
+    } catch (error) {
+        logger.error('App upcoming appointments (technician) failed', { error: error.message, userId: req.user?.id });
+        return ApiResponse.appError(res, 'Failed to fetch upcoming appointments', 500);
+    }
+});
+
+
+// GET /api/app/appointments/:id
+// Detailed appointment view for the assigned technician
+router.get('/appointments/:id', verifyToken, async (req, res) => {
+    try {
+        const appointmentId = parseInt(req.params.id, 10);
+        if (Number.isNaN(appointmentId)) {
+            return ApiResponse.appError(res, 'Invalid appointment id', 400);
+        }
+
+        const details = await appointmentService.getTechnicianAppointmentDetails({
+            userId: req.user.id,
+            appointmentId
+        });
+
+        if (!details) {
+            return ApiResponse.appError(res, 'Appointment not found or not assigned', 404);
+        }
+
+        return ApiResponse.appSuccess(res, 'Appointment details fetched', details);
+    } catch (error) {
+        logger.error('App get appointment details (technician) failed', { error: error.message, userId: req.user?.id, appointmentId: req.params?.id });
+        return ApiResponse.appError(res, 'Failed to fetch appointment details', 500);
+    }
+});
+
+// POST /api/app/appointments/:id/push-back
+// Technician push-back on own appointment/tests
+router.post('/appointments/:id/push-back', verifyToken, async (req, res) => {
+    try {
+        const appointmentId = parseInt(req.params.id, 10);
+        const remarks = (req.body?.remarks || '').toString().trim();
+        if (Number.isNaN(appointmentId)) {
+            return ApiResponse.appError(res, 'Invalid appointment id', 400);
+        }
+        if (!remarks) {
+            return ApiResponse.appError(res, 'remarks is required', 400);
+        }
+
+        const { technicianId, owns } = await appointmentService.getTechnicianContextForAppointment(appointmentId, req.user.id);
+        if (!technicianId || !owns) {
+            return ApiResponse.appError(res, 'Not authorized for this appointment', 403);
+        }
+
+        const result = await coreAppointments.pushBackAppointment(appointmentId, remarks, req.user.id);
+        return ApiResponse.appSuccess(res, 'Appointment pushed back', result);
+    } catch (error) {
+        logger.error('App push-back failed', { error: error.message, userId: req.user?.id, appointmentId: req.params?.id });
+        return ApiResponse.appError(res, 'Failed to push back appointment', 500);
+    }
+});
+
+// POST /api/app/appointments/:id/reschedule
+// Technician reschedule request on own appointment/tests (goes to approval flow unless user can auto-approve)
+router.post('/appointments/:id/reschedule', verifyToken, async (req, res) => {
+    try {
+        const appointmentId = parseInt(req.params.id, 10);
+        const { confirmed_date, confirmed_time, remarks } = req.body || {};
+
+        if (Number.isNaN(appointmentId)) {
+            return ApiResponse.appError(res, 'Invalid appointment id', 400);
+        }
+        if (!confirmed_date || !confirmed_time) {
+            return ApiResponse.appError(res, 'confirmed_date and confirmed_time are required', 400);
+        }
+
+        const { technicianId, owns } = await appointmentService.getTechnicianContextForAppointment(appointmentId, req.user.id);
+        if (!technicianId || !owns) {
+            return ApiResponse.appError(res, 'Not authorized for this appointment', 403);
+        }
+
+        const normalizedDate = confirmed_date; // app already sends yyyy-mm-dd
+        const normalizedTime = confirmed_time; // app already sends hh:mm
+
+        const result = await updateWithApproval({
+            entity_type: 'appointment',
+            entity_id: appointmentId,
+            getFunction: async (id) => await coreAppointments.getAppointment(id),
+            updateFunction: async (id) => await coreAppointments.rescheduleAppointment(
+                id,
+                normalizedDate,
+                normalizedTime,
+                remarks || null,
+                req.user.id
+            ),
+            new_data: {
+                confirmed_date: normalizedDate,
+                confirmed_time: normalizedTime,
+                medical_status: 'rescheduled'
+            },
+            user: req.user,
+            notes: remarks ? `Reschedule reason: ${remarks}` : ''
+        });
+
+        const response = formatApprovalResponse(result);
+        // Align app response style; include needsApproval flag if present
+        return ApiResponse.appSuccess(res, response.message || 'Reschedule request submitted', {
+            needsApproval: !!response.needsApproval,
+            approvalId: response.approvalId || null,
+            ...response
+        });
+    } catch (error) {
+        logger.error('App reschedule failed', { error: error.message, userId: req.user?.id, appointmentId: req.params?.id });
+        return ApiResponse.appError(res, 'Failed to reschedule appointment', 500);
+    }
+});
+
+// GET /api/app/appointments/:id/update-medical-status
+// Get appointment details for medical status update (similar to PATCH but as GET with query params)
+router.get('/appointments/:id/update-medical-status', verifyToken, async (req, res) => {
+    try {
+        const appointmentId = parseInt(req.params.id, 10);
+        const { medical_status } = req.query;
+
+        if (Number.isNaN(appointmentId)) {
+            return ApiResponse.appError(res, 'Invalid appointment id', 400);
+        }
+
+        if (!medical_status) {
+            return ApiResponse.appError(res, 'medical_status is required', 400);
+        }
+
+        const { technicianId, owns } = await appointmentService.getTechnicianContextForAppointment(appointmentId, req.user.id);
+        if (!technicianId || !owns) {
+            return ApiResponse.appError(res, 'Not authorized for this appointment', 403);
+        }
+
+        // Update medical status
+        const result = await coreAppointments.updateMedicalStatus(
+            appointmentId,
+            medical_status,
+            {},
+            req.user.id,
+            null
+        );
+
+        return ApiResponse.appSuccess(res, 'Medical status updated successfully', result);
+    } catch (error) {
+        logger.error('App update medical status failed', { error: error.message, userId: req.user?.id, appointmentId: req.params?.id });
+        return ApiResponse.appError(res, 'Failed to update medical status', 500);
+    }
+});
+
+// POST /api/app/appointments/:id/upload-docs-images
+// Combined upload for documents and customer images (form-data, no JSON arrays)
+router.post('/appointments/:id/upload-docs-images',
+    verifyToken,
+    uploadLimiter,
+    mixedUpload.any(),
+    async (req, res) => {
+        try {
+            const appointmentId = parseInt(req.params.id, 10);
+
+            if (Number.isNaN(appointmentId)) {
+                return ApiResponse.appError(res, 'Invalid appointment id', 400);
+            }
+
+            const { technicianId, owns } = await appointmentService.getTechnicianContextForAppointment(appointmentId, req.user.id);
+            if (!technicianId || !owns) {
+                return ApiResponse.appError(res, 'Not authorized for this appointment', 403);
+            }
+
+            if (!req.files || req.files.length === 0) {
+                return ApiResponse.appError(res, 'No files uploaded', 400);
+            }
+
+            const documents = [];
+            const images = [];
+
+            for (const file of req.files) {
+                // Documents: file fields like doc_1, doc_2 ... with accompanying text fields docType_1, docNumber_1
+                if (file.fieldname.startsWith('doc_')) {
+                    const suffix = file.fieldname.replace('doc_', '');
+                    const docType = req.body[`docType_${suffix}`] || req.body.docType || '';
+                    const docNumber = req.body[`docNumber_${suffix}`] || req.body.docNumber || '';
+
+                    const filePath = await processSingleFile(file, 'appointment_documents');
+                    const result = await coreAppointments.addDocument(
+                        appointmentId,
+                        docType,
+                        docNumber,
+                        filePath,
+                        file.originalname,
+                        req.user.id
+                    );
+                    documents.push({ ...result, docType, docNumber });
+                    continue;
+                }
+
+                // Customer images: file fields like customer_1, customer_2 ... with accompanying text fields imageLabel_1
+                if (file.fieldname.startsWith('customer_')) {
+                    const suffix = file.fieldname.replace('customer_', '');
+                    const imageLabel = req.body[`imageLabel_${suffix}`] || req.body.imageLabel || '';
+
+                    const filePath = await processSingleFile(file, 'appointment_customer_images');
+                    const result = await coreAppointments.addCustomerImage(
+                        appointmentId,
+                        imageLabel,
+                        filePath,
+                        file.originalname,
+                        req.user.id
+                    );
+                    images.push({ ...result, imageLabel });
+                    continue;
+                }
+            }
+
+            if (documents.length === 0 && images.length === 0) {
+                return ApiResponse.appError(res, 'No valid doc_ or customer_ files found', 400);
+            }
+
+            return ApiResponse.appSuccess(res, 'Files uploaded successfully', {
+                documents,
+                images,
+                totalUploaded: documents.length + images.length
+            });
+        } catch (error) {
+            logger.error('App upload docs/images failed', { error: error.message, userId: req.user?.id, appointmentId: req.params?.id });
+            return ApiResponse.appError(res, 'Failed to upload files', 500);
+        }
+    });
+
+// GET /api/app/appointments/:id/docs-images
+// Get all documents and images with full URLs
+router.get('/appointments/:id/docs-images', verifyToken, async (req, res) => {
+    try {
+        const appointmentId = parseInt(req.params.id, 10);
+        
+        if (Number.isNaN(appointmentId)) {
+            return ApiResponse.appError(res, 'Invalid appointment id', 400);
+        }
+
+        const { technicianId, owns } = await appointmentService.getTechnicianContextForAppointment(appointmentId, req.user.id);
+        if (!technicianId || !owns) {
+            return ApiResponse.appError(res, 'Not authorized for this appointment', 403);
+        }
+
+        // Get documents and images
+        const documents = await coreAppointments.getDocuments(appointmentId);
+        const images = await coreAppointments.getCustomerImages(appointmentId);
+
+        // Get base URL
+        const baseUrl = global.BASE_URL || `http://localhost:${process.env.PORT || 5050}`;
+
+        // Add full URLs to documents
+        const documentsWithUrls = documents.map(doc => ({
+            ...doc,
+            file_url: `${baseUrl}/${doc.file_path}`
+        }));
+
+        // Add full URLs to images
+        const imagesWithUrls = images.map(img => ({
+            ...img,
+            file_url: `${baseUrl}/${img.file_path}`
+        }));
+
+        return ApiResponse.appSuccess(res, 'Documents and images fetched successfully', {
+            documents: documentsWithUrls,
+            images: imagesWithUrls
+        });
+    } catch (error) {
+        logger.error('App get docs/images failed', { error: error.message, userId: req.user?.id, appointmentId: req.params?.id });
+        return ApiResponse.appError(res, 'Failed to fetch documents and images', 500);
+    }
+});
+
+module.exports = router;

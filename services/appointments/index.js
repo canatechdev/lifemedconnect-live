@@ -39,6 +39,7 @@ const {
     restoreAppointment,
     updateMedicalStatus,
     markTestCompleted,
+    bulkMarkTestsCompleted,
     updateAppointmentTestAssignments,
     completeAppointment
 } = AppointmentFlow;
@@ -131,6 +132,7 @@ module.exports = {
     restoreAppointment,
     updateMedicalStatus,
     markTestCompleted,
+    bulkMarkTestsCompleted,
     updateAppointmentTestAssignments,
     completeAppointment,
 

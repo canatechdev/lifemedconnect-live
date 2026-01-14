@@ -142,6 +142,7 @@ const bulkTestRoutes = require('./routes/r_test_bulk');
 const approvalRoutes = require('./routes/r_approvals');
 const dashboard = require('./routes/r_dashboard')
 const appAuthRoutes = require('./routes/app/auth');
+const appAppointmentRoutes = require('./routes/app/r_app_appointments');
 const rbacRoutes = require('./routes/r_rbac');
 
 // Health check route
@@ -202,6 +203,7 @@ app.use('/api',dashboard)
 app.use('/api', rbacRoutes);
 // App (mobile) routes (no CSRF)
 app.use('/api/app', appAuthRoutes);
+app.use('/api/app', appAppointmentRoutes);
 
 // SPA Fallback: Serve index.html for all non-API routes (production only)
 // This allows React Router to handle client-side routing
@@ -279,10 +281,17 @@ process.on('unhandledRejection', (reason, promise) => {
 // Start server
 const PORT = config.port;
 server.listen(PORT, () => {
+    // Detect base URL
+    const baseUrl = config.baseUrl || `http://localhost:${PORT}`;
+    
     logger.info(` Server running on port ${PORT}`);
+    logger.info(` Base URL: ${baseUrl}`);
     logger.info(` Environment: ${config.nodeEnv}`);
     logger.info(` CORS Origin: ${config.corsOrigin}`);
     logger.info(` Database: ${config.database.host}:${config.database.port}/${config.database.name}`);
+    
+    // Store base URL globally for use in services
+    global.BASE_URL = baseUrl;
 });
 
 

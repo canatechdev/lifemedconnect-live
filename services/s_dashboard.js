@@ -114,12 +114,19 @@ class DashboardService {
    */
   async getPendingApprovalsCount() {
     try {
+      // Count only the latest pending row per entity to avoid duplicates
       const sql = `
-        SELECT COUNT(*) as count 
-        FROM approval_queue 
-        WHERE status = 'pending'
+        SELECT COUNT(*) AS count FROM (
+          SELECT 
+            entity_type,
+            COALESCE(entity_id, -1) AS entity_id_key,
+            MAX(requested_at) AS max_requested_at
+          FROM approval_queue
+          WHERE status = 'pending'
+          GROUP BY entity_type, COALESCE(entity_id, -1)
+        ) latest_pending
       `;
-      
+
       const [result] = await db.query(sql);
 
       return result.count || 0;

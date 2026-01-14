@@ -274,6 +274,12 @@ async function getAppointmentsByIds(ids) {
     return rows;
 }
 
+const {
+    verifyTestRates,
+    updateAppointmentBasicFields,
+    processTestAssignments
+} = require('./AppointmentUpdateHelpers');
+
 /**
  * Update appointment
  */
@@ -287,43 +293,17 @@ async function updateAppointment(id, row) {
     try {
         await connection.beginTransaction();
 
-        // Build dynamic UPDATE query
-        const updateFields = [];
-        const updateValues = [];
-
-        const allowedFields = [
-            'case_number', 'application_number', 'client_id', 'center_id', 'other_center_id', 'insurer_id',
-            'customer_first_name', 'customer_last_name', 'gender', 'customer_mobile', 'customer_alt_mobile', 'customer_service_no',
-            'customer_email', 'customer_address', 'state', 'city', 'pincode', 'country',
-            'customer_gps_latitude', 'customer_gps_longitude', 'customer_landmark',
-            'visit_type', 'customer_category', 'appointment_date', 'appointment_time', 'confirmed_time',
-            'status', 'assigned_technician_id', 'assigned_at', 'assigned_by',
-            'customer_arrived_at', 'medical_started_at', 'medical_completed_at',
-            'remarks', 'cancellation_reason', 'updated_by', 'cost_type', 'amount', 'amount_upload', 'case_severity'
-        ];
-
-        for (const field of allowedFields) {
-            if (Object.prototype.hasOwnProperty.call(row, field)) {
-                updateFields.push(`${field} = ?`);
-                updateValues.push(safe(row[field]));
-            }
-        }
-
-        if (updateFields.length > 0) {
-            updateFields.push('updated_at = NOW()');
-            updateValues.push(id);
-            const updateSql = `UPDATE appointments SET ${updateFields.join(', ')} WHERE id = ?`;
-            await connection.execute(updateSql, updateValues);
-        }
+        // Update basic appointment fields
+        await updateAppointmentBasicFields(connection, id, row);
 
         // Handle selected_items (test assignments)
         if (Object.prototype.hasOwnProperty.call(row, 'selected_items')) {
             const selectedItems = row.selected_items;
 
-            if (Array.isArray(selectedItems)) { // Allow empty array to clear tests
-                // Get appointment centers
+            if (Array.isArray(selectedItems)) {
+                // Get appointment details
                 const [appointmentRows] = await connection.execute(
-                    'SELECT center_id, other_center_id FROM appointments WHERE id = ?',
+                    'SELECT center_id, other_center_id, client_id, insurer_id FROM appointments WHERE id = ?',
                     [id]
                 );
 
@@ -333,124 +313,19 @@ async function updateAppointment(id, row) {
 
                 const appointment = appointmentRows[0];
 
-                // 1. Fetch existing tests
-                const [existingTests] = await connection.execute(
-                    'SELECT * FROM appointment_tests WHERE appointment_id = ?',
-                    [id]
-                );
-
-                const processedTestIds = new Set();
-                const centersBeingUpdated = new Set();
-
-                // 2. Process incoming items (Update or Insert)
-                for (const item of selectedItems) {
-                    // Determine assigned center
-                    let assignedCenterId = null;
-                    if (item.assigned_center_id) {
-                        assignedCenterId = item.assigned_center_id;
-                    } else if (item.assigned_to === 'center2' && appointment.other_center_id) {
-                        assignedCenterId = appointment.other_center_id;
-                    } else {
-                        assignedCenterId = appointment.center_id;
-                    }
-
-                    if (assignedCenterId) {
-                        centersBeingUpdated.add(assignedCenterId);
-                    }
-
-                    const visitSubtype = item.assigned_technician_id ? 'home' : (item.visit_subtype || 'center');
-                    const assignedTechnicianId = item.assigned_technician_id || null;
-                    const rate = parseFloat(item.rate);
-
-                    // Find matching existing test
-                    // Match by: Type AND ID AND (Assigned Center Match OR Existing is NULL)
-                    // Priority: Exact Center Match > NULL Center Match
-                    let match = existingTests.find(t =>
-                        !processedTestIds.has(t.id) &&
-                        t.rate_type === item.type &&
-                        (item.type === 'test' ? t.test_id === item.id : t.category_id === item.id) &&
-                        t.assigned_center_id === assignedCenterId
-                    );
-
-                    if (!match) {
-                        // Try finding one with NULL center (orphaned/unassigned)
-                        match = existingTests.find(t =>
-                            !processedTestIds.has(t.id) &&
-                            t.rate_type === item.type &&
-                            (item.type === 'test' ? t.test_id === item.id : t.category_id === item.id) &&
-                            t.assigned_center_id === null
-                        );
-                    }
-
-                    if (match) {
-                        // UPDATE existing test
-                        processedTestIds.add(match.id);
-                        await connection.execute(`
-                            UPDATE appointment_tests 
-                            SET 
-                                assigned_center_id = ?,
-                                assigned_technician_id = ?,
-                                visit_subtype = ?,
-                                rate = ?,
-                                item_name = ?,
-                                updated_by = ?,
-                                updated_at = NOW()
-                            WHERE id = ?
-                        `, [
-                            assignedCenterId,
-                            assignedTechnicianId,
-                            visitSubtype,
-                            rate,
-                            item.name,
-                            row.updated_by || null,
-                            match.id
-                        ]);
-                    } else {
-                        // INSERT new test
-                        await connection.execute(`
-                            INSERT INTO appointment_tests (
-                                appointment_id, test_id, category_id, rate_type, item_name, rate,
-                                assigned_center_id, assigned_technician_id, visit_subtype, status,
-                                is_completed, created_at, updated_by
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, NOW(), ?)
-                        `, [
-                            id,
-                            item.type === 'test' ? item.id : null,
-                            item.type === 'category' ? item.id : null,
-                            item.type,
-                            item.name,
-                            rate,
-                            assignedCenterId,
-                            assignedTechnicianId,
-                            visitSubtype,
-                            row.updated_by || null
-                        ]);
-                    }
+                // Verify test rates to prevent tampering
+                if (selectedItems.length > 0 && appointment.client_id && appointment.insurer_id) {
+                    await verifyTestRates(selectedItems, appointment.client_id, appointment.insurer_id, connection);
                 }
 
-                // 3. Delete removed tests
-                // Delete if:
-                // - Not processed (not in incoming list)
-                // - AND (Assigned Center is in centersBeingUpdated OR Assigned Center is NULL)
-                // This preserves tests belonging to other centers that were not part of this update payload
-
-                const testsToDelete = existingTests.filter(t =>
-                    !processedTestIds.has(t.id) &&
-                    (
-                        t.assigned_center_id === null ||
-                        centersBeingUpdated.has(t.assigned_center_id) ||
-                        centersBeingUpdated.size === 0 // If no centers involved (e.g. clearing all), delete everything not processed
-                    )
+                // Process test assignments (update/insert/delete)
+                await processTestAssignments(
+                    connection,
+                    id,
+                    selectedItems,
+                    appointment,
+                    row.updated_by || null
                 );
-
-                if (testsToDelete.length > 0) {
-                    const idsToDelete = testsToDelete.map(t => t.id);
-                    const placeholders = idsToDelete.map(() => '?').join(',');
-                    await connection.execute(
-                        `DELETE FROM appointment_tests WHERE id IN (${placeholders})`,
-                        idsToDelete
-                    );
-                }
             }
         }
 

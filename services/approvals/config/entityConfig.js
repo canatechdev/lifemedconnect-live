@@ -48,7 +48,7 @@ const GLOBAL_DISALLOWED_FIELDS = new Set(['updated_at', 'created_at', 'priority'
  * Fields that should be excluded from UPDATE queries per table
  */
 const TABLE_DISALLOWED_FIELDS = {
-    appointments: new Set(['selected_items', 'total_amount']),
+    appointments: new Set(['selected_items', 'total_amount', 'reschedule_reason']),
     clients: new Set(['insurer_ids']),
     test_categories: new Set(['test_ids', 'rate', 'client_id', 'insurer_id']),
     users: new Set(['password', 'password_hash'])

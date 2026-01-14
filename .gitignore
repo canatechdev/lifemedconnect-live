@@ -21,8 +21,8 @@ yarn-debug.log*
 yarn-error.log*
 
 
-# docs/
-# scripts/
+docs/
+scripts/
 # ==========================
 # Database files
 # ==========================
@@ -30,7 +30,7 @@ yarn-error.log*
 # *.sqllite
 # Keep .db files
 # !*.db
-
+/migrations
 # ==========================
 # Uploads - keep folder and first layer
 # ==========================
@@ -78,8 +78,8 @@ build/
 # Frontend build (public folder contents)
 # ==========================
 # Keep public folder structure but ignore build files
-public/*
-!public/.gitkeep
+# public/*
+# !public/.gitkeep
 
 # ==========================
 # Test coverage

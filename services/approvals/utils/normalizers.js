@@ -77,10 +77,36 @@ const normalizeDateLocal = (value, timeZone = 'Asia/Kolkata') => {
  */
 const normalizeTime = (value) => {
     if (!value) return null;
-    if (typeof value === 'string' && /^\d{2}:\d{2}(:\d{2})?$/.test(value)) {
-        const [h, m, s] = value.split(':');
-        return `${h.padStart(2, '0')}:${(m || '00').padStart(2, '0')}:${(s || '00').padStart(2, '0')}`;
+
+    // Clean string values
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+
+        // Handle TimeOfDay(15:34) or TimeOfDay(15:34:00)
+        const timeOfDayMatch = trimmed.match(/TimeOfDay\((\d{1,2}):(\d{2})(?::(\d{2}))?\)/i);
+        if (timeOfDayMatch) {
+            const [ , h, m, s ] = timeOfDayMatch;
+            return `${h.padStart(2, '0')}:${m.padStart(2, '0')}:${(s || '00').padStart(2, '0')}`;
+        }
+
+        // Handle 12-hour with AM/PM (e.g., 4:03 PM or 04:03:30 am)
+        const ampmMatch = trimmed.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([ap]m)$/i);
+        if (ampmMatch) {
+            let [ , h, m, s, period ] = ampmMatch;
+            h = parseInt(h, 10);
+            if (period.toLowerCase() === 'pm' && h !== 12) h += 12;
+            if (period.toLowerCase() === 'am' && h === 12) h = 0;
+            return `${String(h).padStart(2, '0')}:${m}:${(s || '00').padStart(2, '0')}`;
+        }
+
+        // Handle 24-hour HH:MM or HH:MM:SS
+        if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(trimmed)) {
+            const [h, m, s] = trimmed.split(':');
+            return `${h.padStart(2, '0')}:${(m || '00').padStart(2, '0')}:${(s || '00').padStart(2, '0')}`;
+        }
     }
+
+    // Fallback: attempt Date parsing
     try {
         const d = new Date(value);
         if (isNaN(d)) return null;
@@ -122,7 +148,8 @@ const formatTimeAMPM = (value, timeZone = 'Asia/Kolkata') => {
  * @returns {*} Normalized value
  */
 const normalizeValue = (table, field, value, fieldTypeHints = {}) => {
-    const type = (fieldTypeHints[table] && fieldTypeHints[table][field]) || null;
+    // Accept both nested {table:{field:type}} and flat {field:type}
+    const type = (fieldTypeHints[table] && fieldTypeHints[table][field]) || fieldTypeHints[field] || null;
     if (!type) return value;
     
     if (type === 'date') {

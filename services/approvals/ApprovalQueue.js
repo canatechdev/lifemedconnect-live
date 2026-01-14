@@ -69,6 +69,7 @@ class ApprovalQueue {
     async getPendingApprovals(filters = {}) {
         const { entity_type, priority, requested_by, limit = 100, offset = 0 } = filters;
 
+        // Use latest pending row per entity (no window functions to stay MySQL 5.7 compatible)
         let query = `
             SELECT 
                 aq.*,
@@ -88,6 +89,17 @@ class ApprovalQueue {
                     END
                 ) AS entity_name
             FROM approval_queue aq
+            INNER JOIN (
+                SELECT 
+                    entity_type,
+                    COALESCE(entity_id, -1) AS entity_id_key,
+                    MAX(requested_at) AS max_requested_at
+                FROM approval_queue
+                WHERE status = 'pending'
+                GROUP BY entity_type, COALESCE(entity_id, -1)
+            ) latest ON latest.entity_type = aq.entity_type 
+                    AND latest.entity_id_key = COALESCE(aq.entity_id, -1)
+                    AND latest.max_requested_at = aq.requested_at
             LEFT JOIN users u ON aq.requested_by = u.id
             LEFT JOIN roles r ON u.role_id = r.id
             WHERE aq.status = 'pending'
@@ -111,7 +123,7 @@ class ApprovalQueue {
         }
 
         query += `
-            ORDER BY aq.requested_at DESC
+            ORDER BY aq.requested_at DESC, aq.id DESC
             LIMIT ${parseInt(limit)} OFFSET ${parseInt(offset)}
         `;
 

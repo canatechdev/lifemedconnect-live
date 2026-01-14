@@ -447,6 +447,61 @@ async function markTestCompleted(testId, updatedBy, remarks = '') {
 }
 
 /**
+ * Bulk mark tests as completed
+ */
+async function bulkMarkTestsCompleted(appointmentId, testIds, updatedBy, remarks = '') {
+    const connection = await db.pool.getConnection();
+    try {
+        await connection.beginTransaction();
+
+        if (!testIds || testIds.length === 0) {
+            throw new Error('No test IDs provided');
+        }
+
+        // Update all tests in bulk
+        const placeholders = testIds.map(() => '?').join(',');
+        const updateSql = `
+            UPDATE appointment_tests 
+            SET is_completed = 1, 
+                completed_at = NOW(), 
+                completed_by = ?,
+                completion_remarks = ?,
+                status = 'Completed',
+                updated_at = NOW()
+            WHERE appointment_id = ? AND id IN (${placeholders})
+        `;
+
+        await connection.execute(updateSql, [updatedBy, remarks, appointmentId, ...testIds]);
+
+        // Check if all tests for this appointment are completed
+        const [allTests] = await connection.execute(
+            'SELECT COUNT(*) as total, SUM(is_completed) as completed FROM appointment_tests WHERE appointment_id = ?',
+            [appointmentId]
+        );
+
+        // If all tests completed, update appointment status
+        if (allTests[0] && allTests[0].total === allTests[0].completed) {
+            await connection.execute(
+                `UPDATE appointments 
+                 SET status = 'Completed', 
+                     medical_completed_at = NOW(),
+                     updated_at = NOW()
+                 WHERE id = ?`,
+                [appointmentId]
+            );
+        }
+
+        await connection.commit();
+        return { success: true, updatedCount: testIds.length };
+    } catch (error) {
+        await connection.rollback();
+        throw error;
+    } finally {
+        connection.release();
+    }
+}
+
+/**
  * Mark appointment as completed (final confirmation from reports)
  */
 async function completeAppointment(appointmentId, userId) {
@@ -544,15 +599,14 @@ async function updateAppointmentTestAssignments(appointmentId, testUpdates, upda
 }
 
 module.exports = {
-    STATUS_FLOW,
-    isValidStatusTransition,
-    logStatusHistory,
     confirmSchedule,
     rescheduleAppointment,
     pushBackAppointment,
     restoreAppointment,
     updateMedicalStatus,
     markTestCompleted,
+    bulkMarkTestsCompleted,
     updateAppointmentTestAssignments,
-    completeAppointment
+    completeAppointment,
+    logStatusHistory
 };

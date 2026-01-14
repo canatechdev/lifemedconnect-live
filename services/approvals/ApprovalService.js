@@ -56,6 +56,14 @@ class ApprovalService {
             // Clear pending approval flag
             await this.queue.updateEntityPendingFlag(approval.entity_type, approval.entity_id, 0, connection);
 
+            // Close any older pending requests for the same entity to avoid stale duplicates
+            await connection.execute(
+                `UPDATE approval_queue 
+                 SET status = 'rejected', reviewed_by = ?, reviewed_at = NOW(), rejection_reason = 'Superseded by newer approval'
+                 WHERE entity_type = ? AND entity_id <=> ? AND status = 'pending' AND id <> ?`,
+                [reviewedBy, approval.entity_type, approval.entity_id, approvalId]
+            );
+
             await connection.commit();
 
             logger.info('Approval request approved', {

@@ -202,6 +202,20 @@ router.get('/appointments', verifyToken, requirePermission('appointments.view'),
     const sortBy = req.query.sortBy || 'id';
     const sortOrder = req.query.sortOrder || 'DESC';
 
+    // If requester is a diagnostic center user, restrict to their appointments only
+    const centerIdFromToken = req.user?.diagnostic_center_id || req.user?.center_id;
+    if (centerIdFromToken) {
+        const result = await service.listAppointmentsbyDiagnosticCenters({
+            page,
+            limit,
+            search,
+            centerId: centerIdFromToken,
+            listType: 'all'
+        });
+        return ApiResponse.paginated(res, result.data, result.pagination);
+    }
+
+    // Admin/Super Admin: return all
     const result = await service.listAppointments({ page, limit, search, sortBy, sortOrder });
     return ApiResponse.paginated(res, result.data, result.pagination);
 }));
@@ -554,21 +568,40 @@ router.patch('/appointments/:id/confirm-schedule',
     })
 );
 
-// Reschedule Appointment
+// Reschedule Appointment (now goes through approval flow)
 router.patch('/appointments/:id/reschedule',
     verifyToken,
     requirePermission('appointments.update'),
     validateRequest(rescheduleSchema),
     asyncHandler(async (req, res) => {
+        const appointmentId = parseInt(req.params.id);
         const { confirmed_date, confirmed_time, reschedule_reason } = req.body;
-        const result = await service.rescheduleAppointment(
-            req.params.id,
-            toMySqlDate(confirmed_date),
-            toMySqlTime(confirmed_time),
-            reschedule_reason,
-            req.user.id
-        );
-        return ApiResponse.success(res, result);
+
+        const normalizedDate = toMySqlDate(confirmed_date);
+        const normalizedTime = toMySqlTime(confirmed_time);
+
+        const result = await updateWithApproval({
+            entity_type: 'appointment',
+            entity_id: appointmentId,
+            getFunction: async (id) => await service.getAppointment(id),
+            updateFunction: async (id) => await service.rescheduleAppointment(
+                id,
+                normalizedDate,
+                normalizedTime,
+                reschedule_reason,
+                req.user.id
+            ),
+            new_data: {
+                confirmed_date: normalizedDate,
+                confirmed_time: normalizedTime,
+                medical_status: 'rescheduled'
+            },
+            user: req.user,
+            notes: reschedule_reason ? `Reschedule reason: ${reschedule_reason}` : ''
+        });
+
+        const response = formatApprovalResponse(result);
+        return ApiResponse.success(res, response, response.message);
     })
 );
 
@@ -702,21 +735,23 @@ router.get('/appointments/tests/:clientId/:insurerId',
     })
 );
 
-// Get Tests and Categories by Client and Insurer
-router.get('/appointments/tests-categories/by-client-insurer',
+// Get Tests and Categories by Client and Insurer (with rates)
+router.get('/appointments/tests-categories/by-client-insurer/:clientId/:insurerId',
     verifyToken,
     requirePermission('appointments.view'),
     asyncHandler(async (req, res) => {
-        const { clientId, insurerId, search } = req.query;
+        const clientId = parseInt(req.params.clientId);
+        const insurerId = parseInt(req.params.insurerId);
+        const search = req.query.search ? String(req.query.search) : '';
 
-        if (!clientId || !insurerId) {
-            return ApiResponse.error(res, 'clientId and insurerId are required', 400);
+        if (Number.isNaN(clientId) || Number.isNaN(insurerId)) {
+            return ApiResponse.error(res, 'Valid clientId and insurerId are required', 400);
         }
 
         const result = await service.getTestsAndCategoriesByClientAndInsurer(
-            parseInt(clientId),
-            parseInt(insurerId),
-            search || ''
+            clientId,
+            insurerId,
+            search
         );
         return ApiResponse.success(res, result);
     })
@@ -840,6 +875,29 @@ router.post('/appointments/:id/split-tests',
     })
 );
 
+// Bulk Mark Tests as Completed
+router.post('/appointments/:id/tests/bulk-complete',
+    verifyToken,
+    requirePermission('appointments.update'),
+    asyncHandler(async (req, res) => {
+        const appointmentId = parseInt(req.params.id);
+        const { testIds, remarks } = req.body;
+
+        if (!testIds || !Array.isArray(testIds) || testIds.length === 0) {
+            return ApiResponse.error(res, 'Test IDs array is required', 400);
+        }
+
+        const result = await service.bulkMarkTestsCompleted(
+            appointmentId,
+            testIds,
+            req.user.id,
+            remarks || ''
+        );
+
+        return ApiResponse.success(res, result, `${result.updatedCount} tests marked as completed`);
+    })
+);
+
 // Delete document
 router.delete('/appointments/:id/documents/:documentId',
     verifyToken,
@@ -890,6 +948,59 @@ router.post('/appointments/:id/documents',
             req.user.id
         );
 
+        return ApiResponse.success(res, result);
+    })
+);
+
+// Add Customer Image to Appointment
+router.post('/appointments/:id/customer-images',
+    verifyToken,
+    requirePermission('appointments.upload_docs'),
+    uploadLimiter,
+    imageUpload.single('image'),
+    validateRequest(addCustomerImageSchema),
+    asyncHandler(async (req, res) => {
+        const appointmentId = parseInt(req.params.id);
+        const { imageLabel } = req.body;
+
+        if (!req.file) {
+            return ApiResponse.error(res, 'Image file is required', 400);
+        }
+
+        const filePath = await processSingleFile(req.file, 'appointment_customer_images');
+        const fileName = req.file.originalname;
+
+        const result = await service.addCustomerImage(
+            appointmentId,
+            imageLabel,
+            filePath,
+            fileName,
+            req.user.id
+        );
+
+        return ApiResponse.success(res, result);
+    })
+);
+
+// Delete customer image
+router.delete('/appointments/:id/customer-images/:imageId',
+    verifyToken,
+    requirePermission('appointments.upload_docs'),
+    validateRequest(deleteCustomerImageSchema),
+    asyncHandler(async (req, res) => {
+        const imageId = parseInt(req.params.imageId);
+        const result = await service.deleteCustomerImage(imageId, req.user.id);
+        return ApiResponse.success(res, result);
+    })
+);
+
+// Alternative delete customer image route (without appointment ID)
+router.delete('/appointments/customer-images/:imageId',
+    verifyToken,
+    requirePermission('appointments.upload_docs'),
+    asyncHandler(async (req, res) => {
+        const imageId = parseInt(req.params.imageId);
+        const result = await service.deleteCustomerImage(imageId, req.user.id);
         return ApiResponse.success(res, result);
     })
 );
@@ -997,6 +1108,35 @@ router.get('/appointments/:id/categorized-reports',
         const appointmentId = parseInt(req.params.id);
         const reports = await service.getCategorizedReports(appointmentId);
         return ApiResponse.success(res, reports);
+    })
+);
+
+// Upload categorized reports for an appointment
+router.post('/appointments/:id/categorized-reports',
+    verifyToken,
+    requirePermission('appointments.upload_docs'),
+    uploadLimiter,
+    mixedUpload.any(),
+    validateRequest(uploadCategorizedReportsSchema),
+    asyncHandler(async (req, res) => {
+        const appointmentId = parseInt(req.params.id);
+        const { reportType } = req.body;
+
+        // Persist files from memory storage to disk and build metadata
+        const savedPaths = await processMultipleFiles(req.files, 'appointment_reports');
+        const filesMeta = savedPaths.map((filePath, idx) => ({
+            file_path: filePath,
+            file_name: req.files?.[idx]?.originalname || null,
+            file_size: req.files?.[idx]?.size ?? null
+        }));
+
+        const result = await service.uploadCategorizedReports(
+            appointmentId,
+            reportType,
+            filesMeta,
+            req.user.id
+        );
+        return ApiResponse.success(res, result);
     })
 );
 
