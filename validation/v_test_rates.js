@@ -3,7 +3,7 @@ const Joi = require('joi');
 const testRateSchema = Joi.object({
     client_id: Joi.number().integer().required(),
     insurer_id: Joi.number().integer().positive().allow(null).optional(),
-    item_name: Joi.string().required(),
+    item_name: Joi.string().optional(),
     item_code: Joi.string().allow('').optional(),
     item_type: Joi.string().allow('', null).optional(),
     category_id: Joi.number().allow(null).optional(),

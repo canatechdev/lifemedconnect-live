@@ -11,7 +11,7 @@ class TestsService extends BaseService {
   constructor() {
     super('tests', 'id', ['test_name', 'test_code'], ['id', 'test_name', 'test_code', 'category_id', 'is_active', 'created_at']);
   }
-// to check neew chnages
+
   /**
    * Create a new test
    * @param {Object} data - Test data

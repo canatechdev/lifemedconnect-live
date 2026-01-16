@@ -24,6 +24,21 @@ async function createTestRate(row) {
         //     throw new Error('test_id is required and must be a positive number');
         // }
 
+        // Fetch test name if test_id is provided
+        let itemName = row.item_name;
+        let itemCode = row.item_code;
+
+        if (row.test_id && (!itemName || !itemCode)) {
+            const testResult = await db.query(
+                'SELECT test_name, test_code FROM tests WHERE id = ?',
+                [row.test_id]
+            );
+            if (testResult && testResult.length > 0) {
+                if (!itemName) itemName = testResult[0].test_name;
+                if (!itemCode) itemCode = testResult[0].test_code;
+            }
+        }
+
         const sql = `
             INSERT INTO bulk_test_rates (
                 client_id, insurer_id, item_type, item_name, item_code,
@@ -36,8 +51,8 @@ async function createTestRate(row) {
             safe(row.client_id),
             safe(row.insurer_id || null),
             'test', // Always 'test' since we removed categories
-            safe(row.item_name),
-            safe(row.item_code || ''),
+            safe(itemName),
+            safe(itemCode),
             safe(row.rate),
             safe(row.test_id),
             null, // category_id is always null
@@ -45,7 +60,7 @@ async function createTestRate(row) {
             safe(row.created_by || null),
         ];
         const result = await db.query(sql, params);
-        
+
         logger.info('Test rate created successfully', { id: result.insertId });
         return result.insertId;
     } catch (error) {
@@ -109,7 +124,7 @@ async function listTestRates({ page = 1, limit = 0, search = '' }) {
         }
 
         const rows = await db.query(dataSql, dataParams);
-        
+
         logger.info('Test rates listed successfully', { total, count: rows.length });
         return {
             data: rows,
@@ -136,16 +151,16 @@ async function getTestClients({ page = 1, limit = 10, search = '', sortBy = 'id'
         logger.info('Getting test clients', { page, limit, search, sortBy, sortOrder });
 
         const searchColumns = [
-            'c.client_code', 
-            'c.client_name', 
-            'c.client_type', 
-            'c.contact_person_name', 
-            'c.contact_person_no', 
+            'c.client_code',
+            'c.client_name',
+            'c.client_type',
+            'c.contact_person_name',
+            'c.contact_person_no',
             'c.email_id',
             'i.insurer_name'
         ];
         const searchParams = [];
-        
+
         let whereClause = ' WHERE c.is_deleted = 0';
 
         if (search && search.trim() !== '') {
@@ -156,10 +171,10 @@ async function getTestClients({ page = 1, limit = 10, search = '', sortBy = 'id'
 
         // Validate sortBy
         const allowedSortColumns = [
-            'c.id', 
-            'c.client_code', 
-            'c.client_name', 
-            'c.client_type', 
+            'c.id',
+            'c.client_code',
+            'c.client_name',
+            'c.client_type',
             'c.created_at',
             'c.contact_person_no'
         ];
@@ -181,7 +196,7 @@ async function getTestClients({ page = 1, limit = 10, search = '', sortBy = 'id'
         const numericPage = Number(page);
 
         // Build the main query with optional LIMIT
-        const limitClause = (!isNaN(numericLimit) && numericLimit > 0) 
+        const limitClause = (!isNaN(numericLimit) && numericLimit > 0)
             ? ` LIMIT ${numericLimit} OFFSET ${(numericPage - 1) * numericLimit}`
             : '';
 
@@ -207,7 +222,7 @@ async function getTestClients({ page = 1, limit = 10, search = '', sortBy = 'id'
             if (row.insurer_names && row.insurer_ids) {
                 const insurerNames = row.insurer_names.split(', ');
                 const insurerIds = row.insurer_ids.split(', ').map(id => parseInt(id));
-                
+
                 insurerNames.forEach((name, index) => {
                     if (name && insurerIds[index]) {
                         insurers.push({
@@ -217,15 +232,15 @@ async function getTestClients({ page = 1, limit = 10, search = '', sortBy = 'id'
                     }
                 });
             }
-            
+
             return {
                 ...row,
                 insurers: insurers
             };
         });
 
-        logger.info('Test clients retrieved successfully', { 
-            total, 
+        logger.info('Test clients retrieved successfully', {
+            total,
             count: transformedRows.length,
             page: numericPage,
             limit: numericLimit
@@ -266,12 +281,12 @@ async function getTestRate(id) {
             WHERE bulk_test_rates.id = ? AND bulk_test_rates.is_deleted = 0
         `;
         const rows = await db.query(sql, [id]);
-        
+
         if (rows.length === 0) {
             logger.warn('Test rate not found', { id });
             return null;
         }
-        
+
         logger.info('Test rate retrieved successfully', { id });
         return rows[0];
     } catch (error) {
@@ -308,13 +323,13 @@ async function updateTestRate(id, updates) {
         values.push(id);
 
         const result = await db.query(sql, values);
-        
+
         if (result.affectedRows === 0) {
             logger.warn('No test rate updated - not found or no changes', { id });
         } else {
             logger.info('Test rate updated successfully', { id, affectedRows: result.affectedRows });
         }
-        
+
         return result.affectedRows;
     } catch (error) {
         logger.error('Error updating test rate', {
@@ -397,13 +412,13 @@ async function getClientTestRates(clientId) {
         });
 
         const finalResult = Object.values(insurerMap);
-        
-        logger.info('Client test rates retrieved successfully', { 
-            clientId, 
+
+        logger.info('Client test rates retrieved successfully', {
+            clientId,
             insurerCount: finalResult.length,
-            totalRates: rateRows.length 
+            totalRates: rateRows.length
         });
-        
+
         return { data: finalResult };
     } catch (error) {
         logger.error('Error getting client test rates', {
@@ -436,17 +451,17 @@ async function getAvailableTests(clientId) {
         `, [clientId]);
 
         const existingTestIds = new Set(existingRates.map(rate => rate.test_id));
-        
+
         // Filter out existing tests
         const availableTests = tests.filter(test => !existingTestIds.has(test.id));
-        
-        logger.info('Available tests retrieved successfully', { 
-            clientId, 
+
+        logger.info('Available tests retrieved successfully', {
+            clientId,
             totalTests: tests.length,
             availableTests: availableTests.length,
             existingTests: existingTestIds.size
         });
-        
+
         return availableTests;
     } catch (error) {
         logger.error('Error getting available tests', {
@@ -472,12 +487,12 @@ async function softDeleteTestRate(ids) {
         const sql = `UPDATE bulk_test_rates SET is_deleted = 1, updated_at = NOW() WHERE id IN (${placeholders})`;
 
         const result = await db.query(sql, ids);
-        
-        logger.info('Test rates soft deleted successfully', { 
-            ids, 
-            affectedRows: result.affectedRows 
+
+        logger.info('Test rates soft deleted successfully', {
+            ids,
+            affectedRows: result.affectedRows
         });
-        
+
         return result.affectedRows;
     } catch (error) {
         logger.error('Error soft deleting test rates', {
@@ -495,13 +510,13 @@ async function deleteTestRate(id) {
         logger.info('Hard deleting test rate', { id });
 
         const result = await db.query('DELETE FROM bulk_test_rates WHERE id = ?', [id]);
-        
+
         if (result.affectedRows === 0) {
             logger.warn('No test rate deleted - not found', { id });
         } else {
             logger.info('Test rate hard deleted successfully', { id, affectedRows: result.affectedRows });
         }
-        
+
         return result.affectedRows;
     } catch (error) {
         logger.error('Error hard deleting test rate', {
@@ -524,7 +539,7 @@ async function getTests() {
             WHERE is_active = 1 AND is_deleted = 0
             ORDER BY test_name
         `);
-        
+
         logger.info('Tests retrieved successfully', { count: tests.length });
         return tests;
     } catch (error) {
