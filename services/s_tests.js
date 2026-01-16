@@ -20,9 +20,16 @@ class TestsService extends BaseService {
    * @returns {Promise<number>} Inserted test ID
    */
   async createTest(data, createdBy = null, connection = null) {
-    const conn = connection || db;
+    let useConnection = connection;
+    let shouldReleaseConnection = false;
 
     try {
+      // Get connection if not provided (needed for SET ? syntax with objects)
+      if (!useConnection) {
+        useConnection = await db.getConnection();
+        shouldReleaseConnection = true;
+      }
+
       logger.info('Creating test', { test_name: data.test_name, createdBy });
 
       // Generate test code if not provided
@@ -34,7 +41,7 @@ class TestsService extends BaseService {
         });
       }
 
-      const [result] = await conn.query(
+      const [result] = await useConnection.query(
         'INSERT INTO tests SET ?',
         { ...data, created_by: createdBy }
       );
@@ -53,6 +60,11 @@ class TestsService extends BaseService {
         data
       });
       throw new Error(`Failed to create test: ${error.message}`);
+    } finally {
+      // Release connection only if we created it
+      if (shouldReleaseConnection && useConnection) {
+        useConnection.release();
+      }
     }
   }
 

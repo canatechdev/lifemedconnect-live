@@ -1,0 +1,1 @@
+import{j as a}from"./ui-libs-DZPj7pLN.js";import{L as e}from"./LayoutBase-DJ3ex6pV.js";import{d as o}from"./index-OR20uQ6u.js";import"./react-vendor-DPS8PF3d.js";const f=({children:l})=>a.jsx(e,{type:o,className:"app-layout-blank flex flex-auto flex-col h-[100vh]",children:a.jsx("div",{className:"flex min-w-0 w-full flex-1",children:l})});export{f as default};

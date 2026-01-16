@@ -21,8 +21,8 @@ yarn-debug.log*
 yarn-error.log*
 
 
-docs/
-scripts/
+# docs/
+# scripts/
 # ==========================
 # Database files
 # ==========================
