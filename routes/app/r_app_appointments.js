@@ -255,7 +255,13 @@ router.post('/appointments/:id/upload-docs-images',
                 // Customer images: file fields like customer_1, customer_2 ... with accompanying text fields imageLabel_1
                 if (file.fieldname.startsWith('customer_')) {
                     const suffix = file.fieldname.replace('customer_', '');
-                    const imageLabel = req.body[`imageLabel_${suffix}`] || req.body.imageLabel || '';
+                    const imageLabel =
+                        req.body[`imageLabel_${suffix}`] ||
+                        req.body.imageLabel ||
+                        // Fallbacks for mobile clients sending arrays or snake_case
+                        (Array.isArray(req.body.image_labels) ? req.body.image_labels[Number(suffix) - 1] : '') ||
+                        req.body.image_labels ||
+                        '';
 
                     const filePath = await processSingleFile(file, 'appointment_customer_images');
                     const result = await coreAppointments.addCustomerImage(
