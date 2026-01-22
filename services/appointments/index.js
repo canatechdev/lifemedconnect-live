@@ -58,7 +58,8 @@ const {
     listAppointmentReports,
     saveAppointmentReports,
     saveAppointmentMedicalFiles,
-    getAppointmentTest
+    getAppointmentTest,
+    getAppointmentCompletionStatus
 } = AppointmentQueries;
 
 // Export Excel operations
@@ -150,6 +151,7 @@ module.exports = {
     saveAppointmentReports,
     saveAppointmentMedicalFiles,
     getAppointmentTest,
+    getAppointmentCompletionStatus,
 
     // Backward-compatible aliases
     listAppointmentsbyDiagnosticCenters,

@@ -10,12 +10,13 @@ const router = express.Router();
 const { verifyToken } = require('../../lib/auth');
 const ApiResponse = require('../../lib/response');
 const logger = require('../../lib/logger');
+const db = require('../../lib/dbconnection');
 const { updateWithApproval, formatApprovalResponse } = require('../../lib/approvalHelper');
 const appointmentService = require('../../services/app/s_app_appointments');
 const coreAppointments = require('../../services/appointments');
 const { uploadLimiter } = require('../../middleware/security');
 const { mixedUpload } = require('../../lib/multer');
-const { processSingleFile } = require('../../lib/fileUpload');
+const { processSingleFile, processMultipleFiles } = require('../../lib/fileUpload');
 
 // GET /api/app/appointments
 // List all appointments assigned to the technician (with tests limited to technician)
@@ -205,6 +206,170 @@ router.get('/appointments/:id/update-medical-status', verifyToken, async (req, r
         return ApiResponse.appError(res, 'Failed to update medical status', 500);
     }
 });
+
+// POST /api/app/appointments/:id/medical-status
+// Unified status update for app (supports JSON or multipart with docs/images)
+router.post('/appointments/:id/medical-status',
+    verifyToken,
+    uploadLimiter,
+    mixedUpload.any(),
+    async (req, res) => {
+        try {
+            const appointmentId = parseInt(req.params.id, 10);
+            const { medical_status, medical_remarks, aadhaar_number, pan_number, pending_report_types } = req.body || {};
+
+            if (Number.isNaN(appointmentId)) {
+                return ApiResponse.appError(res, 'Invalid appointment id', 400);
+            }
+
+            if (!medical_status) {
+                return ApiResponse.appError(res, 'medical_status is required', 400);
+            }
+
+            const allowed = ['arrived', 'in_process', 'partially_completed', 'completed'];
+            if (!allowed.includes(medical_status)) {
+                return ApiResponse.appError(res, `medical_status must be one of: ${allowed.join(', ')}`, 400);
+            }
+
+            if (medical_status === 'partially_completed' && !pending_report_types) {
+                return ApiResponse.appError(res, 'pending_report_types is required for partially_completed', 400);
+            }
+
+            const { technicianId, owns } = await appointmentService.getTechnicianContextForAppointment(appointmentId, req.user.id);
+            if (!technicianId || !owns) {
+                return ApiResponse.appError(res, 'Not authorized for this appointment', 403);
+            }
+
+            // Fetch technician's center for actor context
+            const [techData] = await db.query(
+                'SELECT center_id FROM technicians WHERE id = ?',
+                [technicianId]
+            );
+
+            const actorContext = {
+                technicianId: technicianId,
+                centerId: techData[0]?.center_id || null,
+                type: 'technician'
+            };
+
+            let pendingTypesArray = [];
+            if (pending_report_types) {
+                if (Array.isArray(pending_report_types)) {
+                    pendingTypesArray = pending_report_types;
+                } else if (typeof pending_report_types === 'string') {
+                    pendingTypesArray = pending_report_types.split(',').map(s => s.trim()).filter(Boolean);
+                }
+            }
+
+            // Optional file handling for documents and customer images
+            if (req.files && req.files.length > 0) {
+                for (const file of req.files) {
+                    if (file.fieldname.startsWith('doc_')) {
+                        const suffix = file.fieldname.replace('doc_', '');
+                        const docType = req.body[`docType_${suffix}`] || req.body.docType || '';
+                        const docNumber = req.body[`docNumber_${suffix}`] || req.body.docNumber || '';
+
+                        const filePath = await processSingleFile(file, 'appointment_documents');
+                        await coreAppointments.addDocument(
+                            appointmentId,
+                            docType,
+                            docNumber,
+                            filePath,
+                            file.originalname,
+                            req.user.id
+                        );
+                    }
+
+                    if (file.fieldname.startsWith('customer_')) {
+                        const suffix = file.fieldname.replace('customer_', '');
+                        const imageLabel = req.body[`imageLabel_${suffix}`] || req.body.imageLabel || '';
+
+                        const filePath = await processSingleFile(file, 'appointment_customer_images');
+                        await coreAppointments.addCustomerImage(
+                            appointmentId,
+                            imageLabel,
+                            filePath,
+                            file.originalname,
+                            req.user.id
+                        );
+                    }
+                }
+            }
+
+            // COMPLETED path -> approval flow (match web route behavior)
+            if (medical_status === 'completed') {
+                let filesMeta = [];
+                if (req.files && req.files.length > 0) {
+                    filesMeta = await processMultipleFiles(req.files, 'appointment_medical');
+                }
+
+                if (filesMeta.length > 0) {
+                    await coreAppointments.saveAppointmentMedicalFiles(
+                        appointmentId,
+                        filesMeta,
+                        req.user.id
+                    );
+                }
+
+                const result = await updateWithApproval({
+                    entity_type: 'appointment',
+                    action_type: 'update',
+                    entity_id: appointmentId,
+                    new_data: {
+                        medical_status: 'completed',
+                        medical_remarks: medical_remarks || null,
+                        aadhaar_number: aadhaar_number || null,
+                        pan_number: pan_number || null,
+                        pending_report_types: pendingTypesArray,
+                        updated_by: req.user.id,
+                        _actorContext: actorContext
+                    },
+                    created_by: req.user.id,
+                    role_id: req.user.role_id,
+                    getFunction: coreAppointments.getAppointment,
+                    updateFunction: coreAppointments.updateAppointment,
+                    user: req.user,
+                    notes: actorContext ? `Medical completion requested by ${actorContext.type} (ID: ${actorContext.centerId || actorContext.technicianId})` : 'Medical completion requested with remarks/files',
+                    priority: 'high',
+                });
+
+                const response = formatApprovalResponse(result);
+                return ApiResponse.appSuccess(res, response.message || 'Medical completion submitted for approval', response);
+            }
+
+            // Normal path for arrived / in_process / partially_completed
+            const result = await coreAppointments.updateMedicalStatus(
+                appointmentId,
+                medical_status,
+                {
+                    medical_remarks: medical_remarks || null,
+                    aadhaar_number: aadhaar_number || null,
+                    pan_number: pan_number || null,
+                    pending_report_types: pendingTypesArray
+                },
+                req.user.id,
+                actorContext
+            );
+
+            // Fetch and return completion status
+            const completionStatus = await coreAppointments.getAppointmentCompletionStatus(appointmentId);
+
+            const messages = {
+                arrived: 'Arrival marked successfully',
+                in_process: 'Medical process started successfully',
+                partially_completed: 'Medical marked as partially completed',
+                completed: 'Medical completed successfully'
+            };
+
+            return ApiResponse.appSuccess(res, messages[medical_status] || 'Medical status updated successfully', {
+                ...result,
+                completion_status: completionStatus
+            });
+        } catch (error) {
+            logger.error('App medical status update (POST) failed', { error: error.message, userId: req.user?.id, appointmentId: req.params?.id });
+            return ApiResponse.appError(res, 'Failed to update medical status', 500);
+        }
+    });
 
 // POST /api/app/appointments/:id/upload-docs-images
 // Combined upload for documents and customer images (form-data, no JSON arrays)

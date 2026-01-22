@@ -79,9 +79,9 @@ async function listAppointmentsByCenter({ page = 1, limit = 0, search = '', cent
         conditions.push(`a.confirmed_date IS NOT NULL`);
         conditions.push(`a.confirmed_time IS NOT NULL`);
         conditions.push(`a.pushed_back = 0`);
-        conditions.push(`a.medical_status != 'completed'`);
+        conditions.push(`a.medical_status NOT IN ('completed','medical_completed')`);
     } else if (listType === 'completed') {
-        conditions.push(`a.medical_status = 'completed'`);
+        conditions.push(`a.medical_status IN ('completed','medical_completed')`);
     }
 
     if (search) {
@@ -383,9 +383,9 @@ async function listAllConfirmedAppointments({ page = 1, limit = 0, search = '', 
     const searchParams = [];
 
     if (listType === 'completed') {
-        conditions.push(`a.medical_status = 'completed'`);
+        conditions.push(`a.medical_status IN ('completed','medical_completed')`);
     } else if (listType === '') {
-        conditions.push(`a.medical_status != 'completed'`);
+        conditions.push(`a.medical_status NOT IN ('completed','medical_completed')`);
     }
 
     if (search) {
@@ -792,6 +792,180 @@ async function getAppointmentTest(appointmentId, appointmentTestId) {
     return rows[0] || null;
 }
 
+/**
+ * Get report types by side (center vs home) for an appointment
+ */
+async function getReportTypesBySide(appointmentId) {
+    const normalizeReportTypes = (val) => {
+        if (!val) return [];
+        if (Array.isArray(val)) return val.filter(Boolean);
+        if (typeof val === 'string') {
+            const trimmed = val.trim();
+            if (!trimmed) return [];
+            // JSON array case
+            if (trimmed.startsWith('[')) {
+                try {
+                    const arr = JSON.parse(trimmed);
+                    return Array.isArray(arr) ? arr.filter(Boolean) : [];
+                } catch (e) {
+                    // fall through to single string
+                }
+            }
+            // Single or comma-separated string
+            if (trimmed.includes(',')) {
+                return trimmed.split(',').map((s) => s.trim()).filter(Boolean);
+            }
+            return [trimmed];
+        }
+        return [];
+    };
+
+    // Get center-side report types
+    const centerRows = await db.query(`
+        SELECT DISTINCT 
+            COALESCE(t.report_type, tc.report_type) as report_types
+        FROM appointment_tests at
+        LEFT JOIN tests t ON at.test_id = t.id AND at.rate_type = 'test'
+        LEFT JOIN test_categories tc ON at.category_id = tc.id AND at.rate_type = 'category'
+        WHERE at.appointment_id = ? 
+        AND at.visit_subtype = 'center'
+    `, [appointmentId]);
+    
+    // Get home-side report types
+    const homeRows = await db.query(`
+        SELECT DISTINCT 
+            COALESCE(t.report_type, tc.report_type) as report_types
+        FROM appointment_tests at
+        LEFT JOIN tests t ON at.test_id = t.id AND at.rate_type = 'test'
+        LEFT JOIN test_categories tc ON at.category_id = tc.id AND at.rate_type = 'category'
+        WHERE at.appointment_id = ? 
+        AND at.visit_subtype = 'home'
+    `, [appointmentId]);
+    
+    // Flatten JSON arrays into unique report types
+    const centerTypes = new Set();
+    centerRows.forEach(row => {
+        normalizeReportTypes(row.report_types).forEach((t) => centerTypes.add(t));
+    });
+    
+    const homeTypes = new Set();
+    homeRows.forEach(row => {
+        normalizeReportTypes(row.report_types).forEach((t) => homeTypes.add(t));
+    });
+    
+    return {
+        center_report_types: Array.from(centerTypes),
+        home_report_types: Array.from(homeTypes)
+    };
+}
+
+/**
+ * Parse pending_report_types string with per-side format
+ * Format: "center:pathology,cardiology|home:radiology,mer"
+ */
+function parsePendingReportTypes(pendingString) {
+    if (!pendingString) return { center: [], home: [] };
+    
+    const parts = pendingString.split('|');
+    const result = { center: [], home: [] };
+    
+    parts.forEach(part => {
+        if (part.startsWith('center:')) {
+            result.center = part.replace('center:', '').split(',').filter(Boolean);
+        } else if (part.startsWith('home:')) {
+            result.home = part.replace('home:', '').split(',').filter(Boolean);
+        }
+    });
+    
+    return result;
+}
+
+/**
+ * Serialize per-side pending report types
+ */
+function serializePendingReportTypes(centerPending, homePending) {
+    const parts = [];
+    if (centerPending && centerPending.length > 0) {
+        parts.push(`center:${centerPending.join(',')}`);
+    }
+    if (homePending && homePending.length > 0) {
+        parts.push(`home:${homePending.join(',')}`);
+    }
+    return parts.join('|') || null;
+}
+
+/**
+ * Get appointment completion status with per-side breakdown for 'Both' type
+ * Uses report-type based completion tracking
+ */
+async function getAppointmentCompletionStatus(appointmentId) {
+    const rows = await db.query(
+        `SELECT visit_type, medical_status, pending_report_types,
+                center_medical_status, home_medical_status
+         FROM appointments WHERE id = ?`,
+        [appointmentId]
+    );
+    
+    const appt = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+    if (!appt) return null;
+    
+    // Simple case: single flow (Center_Visit or Home_Visit)
+    if (appt.visit_type !== 'Both') {
+        const pending = appt.pending_report_types ? appt.pending_report_types.split(',').filter(Boolean) : [];
+        return {
+            visit_type: appt.visit_type,
+            overall_status: appt.medical_status,
+            pending_report_types: pending,
+            is_complete: appt.medical_status === 'completed'
+        };
+    }
+    
+    // Complex case: Both - compute per-side report-type completion
+    const { center_report_types, home_report_types } = await getReportTypesBySide(appointmentId);
+    const pendingParsed = parsePendingReportTypes(appt.pending_report_types);
+
+    const isCenterDone = ['completed', 'medical_completed'].includes((appt.center_medical_status || '').toLowerCase());
+    const isCenterPartial = ['partially_completed', 'medical_partially_completed'].includes((appt.center_medical_status || '').toLowerCase());
+    const isHomeDone = ['completed', 'medical_completed'].includes((appt.home_medical_status || '').toLowerCase());
+    const isHomePartial = ['partially_completed', 'medical_partially_completed'].includes((appt.home_medical_status || '').toLowerCase());
+
+    const centerPending = isCenterDone
+        ? []
+        : (pendingParsed.center.length > 0
+            ? pendingParsed.center
+            : center_report_types); // if nothing recorded, assume all pending until done
+
+    const homePending = isHomeDone
+        ? []
+        : (pendingParsed.home.length > 0
+            ? pendingParsed.home
+            : home_report_types); // if nothing recorded, assume all pending until done
+
+    const centerCompleted = center_report_types.filter(t => !centerPending.includes(t));
+    const homeCompleted = home_report_types.filter(t => !homePending.includes(t));
+
+    const centerCompleteFlag = centerPending.length === 0 && center_report_types.length > 0 && (isCenterDone || isCenterPartial);
+    const homeCompleteFlag = homePending.length === 0 && home_report_types.length > 0 && (isHomeDone || isHomePartial);
+
+    return {
+        visit_type: 'Both',
+        overall_status: appt.medical_status,
+        center_side: {
+            report_types: center_report_types,
+            pending_report_types: centerPending,
+            completed_report_types: centerCompleted,
+            is_complete: centerCompleteFlag
+        },
+        home_side: {
+            report_types: home_report_types,
+            pending_report_types: homePending,
+            completed_report_types: homeCompleted,
+            is_complete: homeCompleteFlag
+        },
+        is_fully_complete: centerCompleteFlag && homeCompleteFlag
+    };
+}
+
 module.exports = {
     listAppointmentsByCenter,
     listAppointmentsByTechnician,
@@ -805,5 +979,9 @@ module.exports = {
     listAppointmentReports,
     saveAppointmentReports,
     saveAppointmentMedicalFiles,
-    getAppointmentTest
+    getAppointmentTest,
+    getAppointmentCompletionStatus,
+    getReportTypesBySide,
+    parsePendingReportTypes,
+    serializePendingReportTypes
 };

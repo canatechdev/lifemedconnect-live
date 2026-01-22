@@ -16,6 +16,7 @@ const { toMySqlDate, toMySqlTime, toFloat } = require('../lib/normalizers');
 const { pdfUpload, imageUpload, excelUpload, mixedUpload } = require('../lib/multer');
 const { processSingleFile, processMultipleFiles, handleSingleFileFromAny, handleExcelFile } = require('../lib/fileUpload');
 const fs = require('fs');
+const path = require('path');
 const db = require('../lib/dbconnection');
 
 //  NEW: Import security middleware
@@ -314,7 +315,8 @@ router.get('/appointments/qc-history', verifyToken, requirePermission('appointme
 // Get QC details for appointment
 router.get('/appointments/:id/qc-details', verifyToken, requirePermission('appointments.qc'), asyncHandler(async (req, res) => {
     const appointmentId = parseInt(req.params.id);
-    const qcDetails = await service.getQcDetails(appointmentId);
+    const centerId = req.user.center_id || null;
+    const qcDetails = await service.getQcDetails(appointmentId, centerId);
     
     if (!qcDetails) {
         return ApiResponse.notFound(res, 'QC details not found');
@@ -558,11 +560,44 @@ router.patch('/appointments/:id/confirm-schedule',
     validateRequest(confirmScheduleSchema),
     asyncHandler(async (req, res) => {
         const { confirmed_date, confirmed_time } = req.body;
+        const centerId = req.user.center_id || null;
+        const technicianId = req.user.technician_id || null;
+        
+        // Build actorContext for Both appointments
+        let actorContext = centerId
+            ? { centerId, type: 'center' }
+            : (technicianId ? { technicianId, type: 'technician' } : null);
+
+        // Fallback: if Both appointment and actorContext still null, infer side from appointment
+        if (!actorContext) {
+            try {
+                const appt = await service.getAppointment(req.params.id);
+                if (appt?.visit_type === 'Both') {
+                    // If caller has centerId matching a side, use it
+                    if (centerId && appt.center_id === centerId) {
+                        actorContext = { centerId, type: 'center' };
+                    } else if (centerId && appt.other_center_id === centerId) {
+                        actorContext = { centerId, type: 'technician' };
+                    } else {
+                        // If no centerId from user, choose the side that is not yet confirmed
+                        if (!appt.center_confirmed_at) {
+                            actorContext = { centerId: appt.center_id, type: 'center' };
+                        } else if (!appt.home_confirmed_at) {
+                            actorContext = { centerId: appt.other_center_id, type: 'technician' };
+                        }
+                    }
+                }
+            } catch (e) {
+                // swallow; fallback leaves actorContext null
+            }
+        }
+        
         const result = await service.confirmSchedule(
             req.params.id,
             toMySqlDate(confirmed_date),
             toMySqlTime(confirmed_time),
-            req.user.id
+            req.user.id,
+            actorContext
         );
         return ApiResponse.success(res, result);
     })
@@ -574,11 +609,41 @@ router.patch('/appointments/:id/reschedule',
     requirePermission('appointments.update'),
     validateRequest(rescheduleSchema),
     asyncHandler(async (req, res) => {
-        const appointmentId = parseInt(req.params.id);
         const { confirmed_date, confirmed_time, reschedule_reason } = req.body;
-
+        const centerId = req.user.center_id || null;
+        const technicianId = req.user.technician_id || null;
         const normalizedDate = toMySqlDate(confirmed_date);
         const normalizedTime = toMySqlTime(confirmed_time);
+        const appointmentId = parseInt(req.params.id, 10);
+
+        let actorContext = centerId
+            ? { centerId, type: 'center' }
+            : (technicianId ? { technicianId, type: 'technician' } : null);
+
+        // Fallback inference for Both appointments when missing
+        if (!actorContext) {
+            try {
+                const appt = await service.getAppointment(appointmentId);
+                if (appt?.visit_type === 'Both') {
+                    if (centerId && appt.center_id === centerId) {
+                        actorContext = { centerId, type: 'center' };
+                    } else if (centerId && appt.other_center_id === centerId) {
+                        actorContext = { centerId, type: 'technician' };
+                    } else {
+                        if (!appt.center_reschedule_remark) {
+                            actorContext = { centerId: appt.center_id, type: 'center' };
+                        } else if (!appt.home_reschedule_remark) {
+                            actorContext = { centerId: appt.other_center_id, type: 'technician' };
+                        } else {
+                            // default to center side if both already have remarks
+                            actorContext = { centerId: appt.center_id, type: 'center' };
+                        }
+                    }
+                }
+            } catch (e) {
+                // leave actorContext null if lookup fails
+            }
+        }
 
         const result = await updateWithApproval({
             entity_type: 'appointment',
@@ -594,10 +659,11 @@ router.patch('/appointments/:id/reschedule',
             new_data: {
                 confirmed_date: normalizedDate,
                 confirmed_time: normalizedTime,
-                medical_status: 'rescheduled'
+                medical_status: 'rescheduled',
+                _actorContext: actorContext // Store for approval
             },
             user: req.user,
-            notes: reschedule_reason ? `Reschedule reason: ${reschedule_reason}` : ''
+            notes: actorContext ? `Reschedule by ${actorContext.type} (ID: ${actorContext.centerId}): ${reschedule_reason || 'No reason'}` : (reschedule_reason || '')
         });
 
         const response = formatApprovalResponse(result);
@@ -646,6 +712,12 @@ router.patch('/appointments/:id/medical-status',
                 );
             }
 
+            // Build actor context for center users to preserve in approval metadata
+            const actorContext = centerId ? {
+                centerId: centerId,
+                type: 'center'
+            } : null;
+
             const result = await updateWithApproval({
                 entity_type: 'appointment',
                 action_type: 'update',
@@ -656,13 +728,14 @@ router.patch('/appointments/:id/medical-status',
                     aadhaar_number,
                     pan_number,
                     updated_by: numericUserId,
+                    _actorContext: actorContext // Store for later retrieval
                 },
                 created_by: numericUserId,
                 role_id: req.user.role_id,
                 getFunction: service.getAppointment,
                 updateFunction: service.updateAppointment,
                 user: req.user,
-                notes: 'Medical completion requested with remarks and file upload',
+                notes: actorContext ? `Medical completion requested by ${actorContext.type} (ID: ${actorContext.centerId})` : 'Medical completion requested with remarks and file upload',
                 priority: 'high',
             });
 
@@ -671,6 +744,29 @@ router.patch('/appointments/:id/medical-status',
         }
 
         // Normal path for arrived / in_process / partially_completed
+        // Build actor context for center users
+        let actorContext = centerId ? {
+            centerId: centerId,
+            type: 'center'
+        } : null;
+
+        // Fallback inference for Both appointments when actorContext missing (e.g., frontend not sending centerId)
+        if (!actorContext) {
+            try {
+                const appt = await service.getAppointment(appointmentId);
+                if (appt?.visit_type === 'Both') {
+                    if (appt.center_id) {
+                        actorContext = { centerId: appt.center_id, type: 'center' };
+                    } else if (appt.other_center_id) {
+                        // treat other_center as technician/home side
+                        actorContext = { centerId: appt.other_center_id, type: 'technician' };
+                    }
+                }
+            } catch (e) {
+                // leave actorContext null if lookup fails
+            }
+        }
+
         const result = await service.updateMedicalStatus(
             appointmentId,
             medical_status,
@@ -681,9 +777,16 @@ router.patch('/appointments/:id/medical-status',
                 pending_report_types: pendingTypesArray,
             },
             numericUserId,
-            centerId
+            actorContext
         );
-        return ApiResponse.success(res, result);
+
+        // Fetch and return completion status for 'Both' appointments
+        const completionStatus = await service.getAppointmentCompletionStatus(appointmentId);
+
+        return ApiResponse.success(res, {
+            ...result,
+            completion_status: completionStatus
+        });
     })
 );
 
@@ -703,7 +806,45 @@ router.post('/appointments/:id/push-back',
     requirePermission('appointments.update'),
     validateRequest(pushBackSchema),
     asyncHandler(async (req, res) => {
-        const result = await service.pushBackAppointment(req.params.id, req.body.push_back_reason, req.user.id);
+        const centerId = req.user.center_id || null;
+        const technicianId = req.user.technician_id || null;
+        let actorContext = centerId
+            ? { centerId, type: 'center' }
+            : (technicianId ? { technicianId, type: 'technician' } : null);
+
+        // Allow both field names for remarks
+        const remarks = req.body.push_back_reason || req.body.pushback_remarks || null;
+
+        // Fallback inference for Both appointments when actorContext missing
+        if (!actorContext) {
+            try {
+                const appt = await service.getAppointment(req.params.id);
+                if (appt?.visit_type === 'Both') {
+                    // If user center matches a side
+                    if (centerId && appt.center_id === centerId) {
+                        actorContext = { centerId, type: 'center' };
+                    } else if (centerId && appt.other_center_id === centerId) {
+                        actorContext = { centerId, type: 'technician' };
+                    } else {
+                        // Choose side not yet pushed back
+                        if (!appt.center_pushed_back) {
+                            actorContext = { centerId: appt.center_id, type: 'center' };
+                        } else if (!appt.home_pushed_back) {
+                            actorContext = { centerId: appt.other_center_id, type: 'technician' };
+                        }
+                    }
+                }
+            } catch (e) {
+                // leave actorContext null if lookup fails
+            }
+        }
+
+        const result = await service.pushBackAppointment(
+            req.params.id,
+            remarks,
+            req.user.id,
+            actorContext
+        );
         return ApiResponse.success(res, result);
     })
 );
@@ -936,7 +1077,8 @@ router.post('/appointments/:id/documents',
             return ApiResponse.error(res, 'Document file is required', 400);
         }
 
-        const filePath = await processSingleFile(req.file, 'appointment_documents');
+        const docSubfolder = path.join('appointment_documents', `appointment_${appointmentId}`, `user_${req.user.id}`);
+        const filePath = await processSingleFile(req.file, docSubfolder);
         const fileName = req.file.originalname;
 
         const result = await service.addDocument(
@@ -967,7 +1109,8 @@ router.post('/appointments/:id/customer-images',
             return ApiResponse.error(res, 'Image file is required', 400);
         }
 
-        const filePath = await processSingleFile(req.file, 'appointment_customer_images');
+        const imageSubfolder = path.join('appointment_customer_images', `appointment_${appointmentId}`, `user_${req.user.id}`);
+        const filePath = await processSingleFile(req.file, imageSubfolder);
         const fileName = req.file.originalname;
 
         const result = await service.addCustomerImage(
@@ -1106,7 +1249,8 @@ router.get('/appointments/:id/categorized-reports',
     requirePermission('appointments.view'),
     asyncHandler(async (req, res) => {
         const appointmentId = parseInt(req.params.id);
-        const reports = await service.getCategorizedReports(appointmentId);
+        const centerId = req.user.center_id || null;
+        const reports = await service.getCategorizedReports(appointmentId, centerId);
         return ApiResponse.success(res, reports);
     })
 );

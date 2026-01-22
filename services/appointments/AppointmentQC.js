@@ -108,8 +108,9 @@ async function listQCPendingAppointments({ page = 1, limit = 10, search = '', so
 /**
  * Get QC appointment details (appointment + categorized reports)
  * @param {number} appointmentId 
+ * @param {number|null} centerId - Optional: filter by center for Both appointments
  */
-async function getQCAppointmentDetails(appointmentId) {
+async function getQCAppointmentDetails(appointmentId, centerId = null) {
     // Get appointment
     const appointmentSql = 'SELECT * FROM appointments WHERE id = ?';
     const appointmentRows = await db.query(appointmentSql, [appointmentId]);
@@ -120,9 +121,9 @@ async function getQCAppointmentDetails(appointmentId) {
 
     const appointment = appointmentRows[0];
 
-    // Get categorized reports (grouped by type)
+    // Get categorized reports (grouped by type), filtered by centerId if provided
     const { getCategorizedReports } = require('./AppointmentReports');
-    const reports = await getCategorizedReports(appointmentId);
+    const reports = await getCategorizedReports(appointmentId, centerId);
 
     // Get ALL QC history (limit 50 for safety)
     const qcHistorySql = `
@@ -140,9 +141,8 @@ async function getQCAppointmentDetails(appointmentId) {
     const qcHistoryRows = await db.query(qcHistorySql, [appointmentId]);
     const latestQCHistory = qcHistoryRows.length > 0 ? qcHistoryRows[0] : null;
 
-    // Get appointment tests with test + category info
-    const testsSql = `
-
+    // Get appointment tests with test + category info, filtered by centerId if provided
+    let testsSql = `
         SELECT 
         at.*,
         t.test_name, t.description AS test_description, t.report_type AS test_report_type,
@@ -152,9 +152,18 @@ async function getQCAppointmentDetails(appointmentId) {
                ON at.test_id = t.id AND at.rate_type = 'test'
         LEFT JOIN test_categories tc 
                ON at.category_id = tc.id AND at.rate_type = 'category'
-        WHERE at.appointment_id = ?;
+        WHERE at.appointment_id = ?
     `;
-    const appointmentTests = await db.query(testsSql, [appointmentId]);
+    
+    const testsParams = [appointmentId];
+    
+    // If centerId provided, filter tests by assigned_center_id
+    if (centerId) {
+        testsSql += ` AND at.assigned_center_id = ?`;
+        testsParams.push(centerId);
+    }
+    
+    const appointmentTests = await db.query(testsSql, testsParams);
 
     return {
         ...appointment,

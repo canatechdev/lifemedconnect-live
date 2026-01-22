@@ -15,7 +15,7 @@ const { mixedUpload } = require('../lib/multer');
 const centerSchemas = require('../validation/v_center');
 const { parsePaginationParams } = require('../lib/helpers');
 
-// ⭐ NEW: Import security middleware
+//  NEW: Import security middleware
 const { uploadLimiter } = require('../middleware/security');
 // File upload configuration
 const uploadFields = mixedUpload.fields([

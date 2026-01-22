@@ -143,6 +143,7 @@ const approvalRoutes = require('./routes/r_approvals');
 const dashboard = require('./routes/r_dashboard')
 const appAuthRoutes = require('./routes/app/auth');
 const appAppointmentRoutes = require('./routes/app/r_app_appointments');
+const appDashboardRoutes = require('./routes/app/r_app_dashboard');
 const rbacRoutes = require('./routes/r_rbac');
 
 // Health check route
@@ -204,6 +205,7 @@ app.use('/api', rbacRoutes);
 // App (mobile) routes (no CSRF)
 app.use('/api/app', appAuthRoutes);
 app.use('/api/app', appAppointmentRoutes);
+app.use('/api/app', appDashboardRoutes);
 
 // SPA Fallback: Serve index.html for all non-API routes (production only)
 // This allows React Router to handle client-side routing

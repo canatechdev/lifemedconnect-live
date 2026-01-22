@@ -7,7 +7,8 @@ const ExcelJS = require('exceljs');
 const xlsx = require('xlsx');
 const db = require('../../lib/dbconnection');
 const logger = require('../../lib/logger');
-const { createWithApproval } = require('../../lib/approvalHelper');
+const approvalHelper = require('../../lib/approvalHelper');
+const createWithApproval = approvalHelper?.createWithApproval;
 const { appointmentCreateSchema } = require('../../validation/v_appointments');
 const { createAppointment } = require('./AppointmentCRUD');
 
@@ -390,14 +391,23 @@ async function processUploadedFile(filePath, user) {
                 }
 
 
-                const result = await createWithApproval({
-                    entity_type: 'appointment_import',
-                    createFunction: createAppointment,
-                    data: value,
-                    user
-                });
-
-                insertedIds.push(result.entity_id || result.id);
+                if (typeof createWithApproval === 'function') {
+                    const result = await createWithApproval({
+                        entity_type: 'appointment_import',
+                        createFunction: createAppointment,
+                        data: value,
+                        user
+                    });
+                    insertedIds.push(result.entity_id || result.id);
+                } else {
+                    // Fallback: create directly when approval helper is unavailable
+                    logger.warn('createWithApproval not available, creating appointment directly (no approval)', {
+                        userId: user.id,
+                        roleId: user.role_id
+                    });
+                    const id = await createAppointment(value);
+                    insertedIds.push(id);
+                }
 
             } catch (error) {
                 logger.error(`Error processing row ${index + 8}:`, error.message);

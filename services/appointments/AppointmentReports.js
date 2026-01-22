@@ -77,25 +77,57 @@ async function uploadCategorizedReports(appointmentId, reportType, filesMeta, us
 /**
  * Get all categorized reports for an appointment (grouped by type)
  * @param {number} appointmentId 
+ * @param {number|null} centerId - Optional: filter reports by center for Both appointments
  */
-async function getCategorizedReports(appointmentId) {
-    // Query reports
-    const sqlReports = `
+async function getCategorizedReports(appointmentId, centerId = null) {
+    // For Both appointments with centerId, filter reports by assigned_center_id
+    let sqlReports = `
         SELECT 
-            id,
-            appointment_id,
-            report_type,
-            file_path,
-            file_name,
-            file_size,
-            uploaded_by,
-            uploaded_at
-        FROM appointment_categorized_reports
-        WHERE appointment_id = ? AND is_deleted = 0
-        ORDER BY report_type, uploaded_at DESC
+            acr.id,
+            acr.appointment_id,
+            acr.report_type,
+            acr.file_path,
+            acr.file_name,
+            acr.file_size,
+            acr.uploaded_by,
+            acr.uploaded_at
+        FROM appointment_categorized_reports acr
+        WHERE acr.appointment_id = ? AND acr.is_deleted = 0
     `;
 
-    const rows = await db.query(sqlReports, [appointmentId]);
+    const params = [appointmentId];
+
+    // If centerId is provided, join with appointment_tests to filter by assigned_center_id
+    if (centerId) {
+        sqlReports = `
+            SELECT DISTINCT
+                acr.id,
+                acr.appointment_id,
+                acr.report_type,
+                acr.file_path,
+                acr.file_name,
+                acr.file_size,
+                acr.uploaded_by,
+                acr.uploaded_at
+            FROM appointment_categorized_reports acr
+            INNER JOIN appointment_tests at ON acr.appointment_id = at.appointment_id
+            LEFT JOIN tests t ON at.test_id = t.id
+            LEFT JOIN test_categories tc ON at.category_id = tc.id
+            WHERE acr.appointment_id = ? 
+                AND acr.is_deleted = 0
+                AND at.assigned_center_id = ?
+                AND (
+                    (t.report_type = acr.report_type) OR 
+                    (tc.report_type = acr.report_type) OR
+                    (t.report_type IS NULL AND tc.report_type IS NULL)
+                )
+        `;
+        params.push(centerId);
+    }
+
+    sqlReports += ` ORDER BY acr.report_type, acr.uploaded_at DESC`;
+
+    const rows = await db.query(sqlReports, params);
 
     // Query latest remarks from QC history
     const sqlRemarks = `

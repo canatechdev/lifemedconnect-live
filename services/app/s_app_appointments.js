@@ -186,6 +186,8 @@ async function getTechnicianAppointmentDetails({ userId, appointmentId }) {
             a.customer_gps_latitude,
             a.customer_gps_longitude,
             a.pushed_back,
+            a.pending_report_types,
+            a.medical_remarks,
             JSON_ARRAYAGG(
                 JSON_OBJECT(
                     'id', at.id,

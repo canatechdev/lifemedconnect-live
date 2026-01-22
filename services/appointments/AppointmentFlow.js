@@ -5,6 +5,22 @@
 
 const db = require('../../lib/dbconnection');
 const logger = require('../../lib/logger');
+const { 
+    logOperationStart, 
+    logOperationEnd, 
+    logDBState, 
+    logActorContext, 
+    logCompletionStatus, 
+    logReportTypeTracking, 
+    logBothAppointmentSplit,
+    logFieldMapping,
+    logTestUpdates
+} = require('../../lib/appointmentLogger');
+const {
+    computeOverallStatus,
+    parsePendingReportTypes,
+    serializePendingReportTypes
+} = require('./AppointmentStatusHelpers');
 
 /**
  * Status flow configuration
@@ -67,41 +83,110 @@ async function logStatusHistory(appointmentId, changeData, connection = null) {
 /**
  * Center confirm schedule
  */
-async function confirmSchedule(appointmentId, confirmedDate, confirmedTime, userId) {
+async function confirmSchedule(appointmentId, confirmedDate, confirmedTime, userId, actorContext = null) {
     const connection = await db.pool.getConnection();
     try {
         await connection.beginTransaction();
 
+        logOperationStart('CONFIRM_SCHEDULE', appointmentId, {
+            confirmedDate,
+            confirmedTime,
+            userId,
+            actorContext
+        });
+
         const [current] = await connection.query(
-            'SELECT medical_status FROM appointments WHERE id = ?',
+            'SELECT visit_type, medical_status, center_confirmed_at, home_confirmed_at, center_medical_status, home_medical_status FROM appointments WHERE id = ?',
             [appointmentId]
         );
 
-        await connection.query(`
-            UPDATE appointments 
-            SET 
-                confirmed_date = ?,
-                confirmed_time = ?,
-                medical_status = 'scheduled',
-                updated_at = NOW(),
-                updated_by = ?
-            WHERE id = ?
-        `, [confirmedDate, confirmedTime, userId, appointmentId]);
+        if (current && current[0]) {
+            logDBState('BEFORE_CONFIRM_SCHEDULE', appointmentId, current[0]);
+        }
+
+        const currentRow = current[0];
+        const visitType = currentRow.visit_type;
+
+        // For Both appointments with actorContext, update per-side fields
+        if (visitType === 'Both' && actorContext) {
+            const side = actorContext.type; // 'center' or 'technician'
+            const updateFields = [];
+            const updateValues = [];
+
+            if (side === 'center') {
+                updateFields.push('center_confirmed_at = ?');
+                updateValues.push(new Date(`${confirmedDate} ${confirmedTime}`));
+                updateFields.push('center_medical_status = ?');
+                updateValues.push('scheduled');
+            } else {
+                updateFields.push('home_confirmed_at = ?');
+                updateValues.push(new Date(`${confirmedDate} ${confirmedTime}`));
+                updateFields.push('home_medical_status = ?');
+                updateValues.push('scheduled');
+            }
+
+            // Check if both sides have now confirmed
+            const centerConfirmed = side === 'center' ? true : !!currentRow.center_confirmed_at;
+            const homeConfirmed = side === 'technician' ? true : !!currentRow.home_confirmed_at;
+
+            if (centerConfirmed && homeConfirmed) {
+                updateFields.push('status = ?');
+                updateValues.push('pending');
+                updateFields.push('medical_status = ?');
+                updateValues.push('scheduled');
+            }
+
+            updateFields.push('updated_at = NOW()');
+            updateFields.push('updated_by = ?');
+            updateValues.push(userId);
+            updateValues.push(appointmentId);
+
+            await connection.query(
+                `UPDATE appointments SET ${updateFields.join(', ')} WHERE id = ?`,
+                updateValues
+            );
+        } else {
+            // Single center/home flow - use existing fields
+            await connection.query(`
+                UPDATE appointments 
+                SET 
+                    confirmed_date = ?,
+                    confirmed_time = ?,
+                    status = 'pending',
+                    medical_status = 'scheduled',
+                    updated_at = NOW(),
+                    updated_by = ?
+                WHERE id = ?
+            `, [confirmedDate, confirmedTime, userId, appointmentId]);
+        }
 
         await logStatusHistory(appointmentId, {
-            old_medical_status: current?.medical_status || null,
-            new_medical_status: 'scheduled',
+            old_medical_status: currentRow?.medical_status || null,
+            new_medical_status: visitType === 'Both' && actorContext ? null : 'scheduled',
             changed_by: userId,
             change_type: 'schedule_confirm',
-            remarks: 'Appointment schedule confirmed',
-            metadata: { confirmed_date: confirmedDate, confirmed_time: confirmedTime }
+            remarks: visitType === 'Both' && actorContext 
+                ? `${actorContext.type === 'center' ? 'Center' : 'Home'} side confirmed`
+                : 'Appointment schedule confirmed',
+            metadata: { 
+                confirmed_date: confirmedDate, 
+                confirmed_time: confirmedTime,
+                side: actorContext?.type || null
+            }
         }, connection);
 
         await connection.commit();
+
+        const [finalState] = await connection.query('SELECT * FROM appointments WHERE id = ?', [appointmentId]);
+        if (finalState && finalState[0]) {
+            logDBState('AFTER_CONFIRM_SCHEDULE', appointmentId, finalState[0]);
+        }
+        logOperationEnd('CONFIRM_SCHEDULE', appointmentId, { success: true });
         return { success: true, message: 'Schedule confirmed successfully' };
     } catch (error) {
         await connection.rollback();
         logger.error('Error in confirmSchedule:', error);
+        logOperationEnd('CONFIRM_SCHEDULE', appointmentId, { success: false, error: error.message });
         throw error;
     } finally {
         connection.release();
@@ -116,19 +201,27 @@ async function rescheduleAppointment(appointmentId, newConfirmedDate, newConfirm
     try {
         await connection.beginTransaction();
 
-        const [rows] = await connection.query(
-            'SELECT medical_status, confirmed_date, confirmed_time FROM appointments WHERE id = ? FOR UPDATE',
+        logOperationStart('RESCHEDULE_APPOINTMENT', appointmentId, {
+            newConfirmedDate,
+            newConfirmedTime,
+            remarks,
+            userId
+        });
+
+        const [current] = await connection.query(
+            'SELECT confirmed_date, confirmed_time, medical_status FROM appointments WHERE id = ? FOR UPDATE',
             [appointmentId]
         );
 
-        const current = Array.isArray(rows) ? rows[0] : rows;
-
-        if (!current) {
+        if (!current || current.length === 0) {
             throw new Error('Appointment not found');
         }
 
-        const oldDateValue = current.confirmed_date;
-        const oldTime = current.confirmed_time;
+        const { confirmed_date, confirmed_time, medical_status } = current[0];
+        logDBState('BEFORE_RESCHEDULE', appointmentId, current[0]);
+
+        const oldDateValue = confirmed_date;
+        const oldTime = confirmed_time;
 
         let oldDate = null;
         if (oldDateValue instanceof Date) {
@@ -156,29 +249,33 @@ async function rescheduleAppointment(appointmentId, newConfirmedDate, newConfirm
             [newConfirmedDate, newConfirmedTime, userId, appointmentId]
         );
 
-        await logStatusHistory(
-            appointmentId,
-            {
-                old_medical_status: current.medical_status || null,
-                new_medical_status: 'rescheduled',
-                changed_by: userId,
-                change_type: 'reschedule',
-                remarks: remarks || null,
-                metadata: {
-                    old_confirmed_date: oldDate || null,
-                    old_confirmed_time: oldTime || null,
-                    new_confirmed_date: newConfirmedDate,
-                    new_confirmed_time: newConfirmedTime,
-                },
-            },
-            connection
-        );
+        await logStatusHistory(appointmentId, {
+            old_medical_status: medical_status,
+            new_medical_status: 'rescheduled',
+            changed_by: userId,
+            change_type: 'schedule_reschedule',
+            remarks: remarks || 'Appointment rescheduled',
+            metadata: {
+                previous_confirmed_date: confirmed_date,
+                previous_confirmed_time: confirmed_time,
+                new_confirmed_date: newConfirmedDate,
+                new_confirmed_time: newConfirmedTime
+            }
+        }, connection);
 
         await connection.commit();
+
+        const [finalState] = await connection.query('SELECT * FROM appointments WHERE id = ?', [appointmentId]);
+        if (finalState && finalState[0]) {
+            logDBState('AFTER_RESCHEDULE', appointmentId, finalState[0]);
+        }
+        logOperationEnd('RESCHEDULE_APPOINTMENT', appointmentId, { success: true });
+
         return { success: true, message: 'Appointment rescheduled successfully' };
     } catch (error) {
         await connection.rollback();
         logger.error('Error in rescheduleAppointment:', error);
+        logOperationEnd('RESCHEDULE_APPOINTMENT', appointmentId, { success: false, error: error.message });
         throw error;
     } finally {
         connection.release();
@@ -186,38 +283,81 @@ async function rescheduleAppointment(appointmentId, newConfirmedDate, newConfirm
 }
 
 /**
- * Center push back appointment
+ * Push back appointment (supports per-side for Both)
  */
-async function pushBackAppointment(appointmentId, remarks, userId) {
+async function pushBackAppointment(appointmentId, remarks, userId, actorContext = null) {
     const connection = await db.pool.getConnection();
     try {
         await connection.beginTransaction();
 
-        const [current] = await connection.query(
-            'SELECT medical_status FROM appointments WHERE id = ?',
-            [appointmentId]
-        );
+        logOperationStart('PUSHBACK_APPOINTMENT', appointmentId, {
+            remarks,
+            userId,
+            actorContext
+        });
 
-        await connection.query(`
-            UPDATE appointments 
-            SET 
-                pushed_back = 1,
-                pushback_remarks = ?,
-                pushed_back_by = ?,
-                pushed_back_at = NOW(),
-                updated_at = NOW(),
-                updated_by = ?
-            WHERE id = ?
-        `, [remarks, userId, userId, appointmentId]);
+        const [current] = await connection.query('SELECT id, pushed_back, visit_type, center_pushed_back, home_pushed_back, medical_status FROM appointments WHERE id = ?', [appointmentId]);
 
-        await connection.query(`
-            INSERT INTO appointment_pushback_history 
-            (appointment_id, pushed_back_by, remarks)
-            VALUES (?, ?, ?)
-        `, [appointmentId, userId, remarks]);
+        if (!current || current.length === 0) {
+            throw new Error('Appointment not found');
+        }
+
+        logDBState('BEFORE_PUSHBACK', appointmentId, current[0]);
+        const visitType = current[0].visit_type;
+
+        if (visitType === 'Both') {
+            if (!actorContext) {
+                throw new Error('Both appointments require actorContext to push back per side');
+            }
+
+            const side = actorContext.type === 'center' ? 'center' : 'home';
+            const centerPushed = side === 'center' ? 1 : (current[0].center_pushed_back || 0);
+            const homePushed = side === 'home' ? 1 : (current[0].home_pushed_back || 0);
+
+            const updates = [];
+            const values = [];
+
+            if (side === 'center') {
+                updates.push('center_pushed_back = 1');
+                updates.push('center_pushback_remarks = ?');
+                values.push(remarks || null);
+            } else {
+                updates.push('home_pushed_back = 1');
+                updates.push('home_pushback_remarks = ?');
+                values.push(remarks || null);
+            }
+
+            // Overall pushed_back flag if either side pushed
+            const overallPushed = centerPushed || homePushed;
+            updates.push('pushed_back = ?');
+            values.push(overallPushed ? 1 : 0);
+
+            // Set status to pushed_back when any side pushes
+            updates.push('status = ?');
+            values.push(overallPushed ? 'pushed_back' : 'pending');
+
+            updates.push('pushback_remarks = ?');
+            values.push(remarks || null);
+
+            updates.push('pushed_back_by = ?');
+            values.push(userId);
+            updates.push('pushed_back_at = NOW()');
+            updates.push('updated_at = NOW()');
+            updates.push('updated_by = ?');
+            values.push(userId);
+
+            values.push(appointmentId);
+
+            await connection.query(`UPDATE appointments SET ${updates.join(', ')} WHERE id = ?`, values);
+        } else {
+            // Simple flow
+            await connection.query(`UPDATE appointments SET pushed_back = 1, status = 'pushed_back', pushback_remarks = ?, pushed_back_by = ?, pushed_back_at = NOW(), updated_at = NOW(), updated_by = ? WHERE id = ?`, [remarks, userId, userId, appointmentId]);
+        }
+
+        await connection.query(`INSERT INTO appointment_pushback_history (appointment_id, pushed_back_by, remarks) VALUES (?, ?, ?)`, [appointmentId, userId, remarks]);
 
         await logStatusHistory(appointmentId, {
-            old_medical_status: current?.medical_status || null,
+            old_medical_status: current[0].medical_status,
             new_medical_status: 'pushed_back',
             changed_by: userId,
             change_type: 'push_back',
@@ -227,13 +367,17 @@ async function pushBackAppointment(appointmentId, remarks, userId) {
 
         await connection.commit();
 
-        return {
-            success: true,
-            message: 'Appointment pushed back successfully'
-        };
+        const [finalState] = await connection.query('SELECT * FROM appointments WHERE id = ?', [appointmentId]);
+        if (finalState && finalState[0]) {
+            logDBState('AFTER_PUSHBACK', appointmentId, finalState[0]);
+        }
+        logOperationEnd('PUSHBACK_APPOINTMENT', appointmentId, { success: true });
+
+        return { success: true, message: 'Appointment pushed back successfully' };
     } catch (error) {
         await connection.rollback();
         logger.error('Error in pushBackAppointment:', error);
+        logOperationEnd('PUSHBACK_APPOINTMENT', appointmentId, { success: false, error: error.message });
         throw new Error(`Failed to push back appointment: ${error.message}`);
     } finally {
         connection.release();
@@ -248,10 +392,21 @@ async function restoreAppointment(appointmentId, userId) {
     try {
         await connection.beginTransaction();
 
-        const [current] = await connection.query(
-            'SELECT medical_status FROM appointments WHERE id = ?',
-            [appointmentId]
-        );
+        logOperationStart('RESTORE_APPOINTMENT', appointmentId, {
+            userId
+        });
+
+        const [appointment] = await connection.query('SELECT status FROM appointments WHERE id = ? FOR UPDATE', [appointmentId]);
+
+        if (!appointment || appointment.length === 0) {
+            throw new Error('Appointment not found');
+        }
+
+        if (appointment[0].status !== 'pushed_back') {
+            throw new Error('Only pushed back appointments can be restored');
+        }
+
+        logDBState('BEFORE_RESTORE', appointmentId, appointment[0]);
 
         await connection.query(`
             UPDATE appointments 
@@ -266,19 +421,28 @@ async function restoreAppointment(appointmentId, userId) {
         `, [userId, appointmentId]);
 
         await logStatusHistory(appointmentId, {
-            old_medical_status: 'pushed_back',
-            new_medical_status: current?.medical_status || 'scheduled',
+            old_status: 'pushed_back',
+            new_status: 'scheduled',
+            old_medical_status: appointment[0].medical_status,
+            new_medical_status: 'scheduled',
             changed_by: userId,
-            change_type: 'restore',
-            remarks: 'Appointment restored from pushed back status',
-            metadata: { restored_at: new Date() }
+            change_type: 'restore_appointment',
+            metadata: { remarks: 'Appointment restored from pushed_back' }
         }, connection);
 
         await connection.commit();
+
+        const [finalState] = await connection.query('SELECT * FROM appointments WHERE id = ?', [appointmentId]);
+        if (finalState && finalState[0]) {
+            logDBState('AFTER_RESTORE', appointmentId, finalState[0]);
+        }
+        logOperationEnd('RESTORE_APPOINTMENT', appointmentId, { success: true });
+
         return { success: true, message: 'Appointment restored successfully' };
     } catch (error) {
         await connection.rollback();
         logger.error('Error in restoreAppointment:', error);
+        logOperationEnd('RESTORE_APPOINTMENT', appointmentId, { success: false, error: error.message });
         throw error;
     } finally {
         connection.release();
@@ -287,14 +451,31 @@ async function restoreAppointment(appointmentId, userId) {
 
 /**
  * Update medical status
+ * @param {number} appointmentId
+ * @param {string} newStatus - arrived, in_process, partially_completed, completed
+ * @param {object} additionalData - aadhaar, pan, remarks, pending_report_types
+ * @param {number} userId
+ * @param {object} actorContext - { centerId, technicianId, type: 'center'|'technician' }
  */
-async function updateMedicalStatus(appointmentId, newStatus, additionalData, userId, centerId = null) {
+async function updateMedicalStatus(appointmentId, newStatus, additionalData, userId, actorContext = null) {
     const connection = await db.pool.getConnection();
     try {
         await connection.beginTransaction();
 
+        logOperationStart('UPDATE_MEDICAL_STATUS', appointmentId, {
+            newStatus,
+            actorContext,
+            additionalData: {
+                hasAadhaar: !!additionalData?.aadhaar_number,
+                hasPan: !!additionalData?.pan_number,
+                hasRemarks: !!additionalData?.medical_remarks,
+                pendingReportTypes: additionalData?.pending_report_types
+            },
+            userId
+        });
+
         const [current] = await connection.query(
-            'SELECT status, medical_status, aadhaar_number, pan_number, medical_remarks FROM appointments WHERE id = ?',
+            'SELECT status, medical_status, aadhaar_number, pan_number, medical_remarks, visit_type, center_id, other_center_id, pending_report_types, center_medical_status, home_medical_status, center_confirmed_at, home_confirmed_at FROM appointments WHERE id = ?',
             [appointmentId]
         );
 
@@ -304,57 +485,126 @@ async function updateMedicalStatus(appointmentId, newStatus, additionalData, use
 
         const currentRow = Array.isArray(current) ? current[0] : current;
 
-        const updateFields = ['medical_status = ?', 'updated_at = NOW()', 'updated_by = ?'];
-        const updateValues = [newStatus, userId];
+        logDBState('BEFORE_UPDATE', appointmentId, currentRow);
 
-        let pendingTypesString = null;
+        if (actorContext) {
+            logActorContext(appointmentId, { ...actorContext, userId });
+        }
+
+        logFieldMapping(appointmentId, currentRow.visit_type, {
+            visit_type: currentRow.visit_type,
+            activeFields: currentRow.visit_type === 'Both' 
+                ? ['center_confirmed_at', 'home_confirmed_at', 'center_arrived_at', 'home_arrived_at', 'pending_report_types (per-side)']
+                : ['confirmed_at', 'arrived_at', 'pending_report_types (simple)'],
+            legacyFieldsIgnored: currentRow.visit_type === 'Both'
+                ? ['confirmed_at', 'arrived_at']
+                : ['center_confirmed_at', 'home_confirmed_at', 'center_arrived_at', 'home_arrived_at']
+        });
+
+        // Normalize requested pending types (array or comma string)
+        let requestPendingTypes = [];
         if (additionalData && additionalData.pending_report_types !== undefined) {
             const val = additionalData.pending_report_types;
             if (Array.isArray(val)) {
-                pendingTypesString = val.join(',');
+                requestPendingTypes = val;
             } else if (typeof val === 'string') {
-                pendingTypesString = val.trim() || null;
+                requestPendingTypes = val.split(',').map((s) => s.trim()).filter(Boolean);
             }
         }
 
-        // Normalize current status for safe comparison (handles 'Pending', 'pending', etc.)
-        const currentStatus = (currentRow.status || '').toLowerCase();
+        // Compute main status and pending report types
+        let finalMedicalStatus = newStatus;
+        let finalMainStatus = currentRow.status || null;
+        let finalPendingString = null;
+        let perSideUpdates = {}; // For Both appointments
 
-        // Auto-transition main status: pending -> in_process when medical_status becomes 'arrived'
-        let newMainStatus = currentRow.status;
-        if (newStatus === 'arrived' && (!currentStatus || currentStatus === 'pending')) {
-            updateFields.push('status = ?');
-            updateValues.push('checked_in');
-            newMainStatus = 'checked_in';
+        if (currentRow.visit_type === 'Both') {
+            // Both appointment: MUST have actorContext to know which side to update
+            if (!actorContext) {
+                throw new Error('Both appointments require actorContext (center or technician) to update medical status. Cannot determine which side to update.');
+            }
+            
+            // Update per-side status
+            const side = actorContext.type; // 'center' or 'technician'
+            const statusField = side === 'center' ? 'center_medical_status' : 'home_medical_status';
+            
+            perSideUpdates[statusField] = newStatus;
+            
+            // Add per-side timestamps
+            if (newStatus === 'arrived') {
+                const arrivalField = side === 'center' ? 'center_arrived_at' : 'home_arrived_at';
+                perSideUpdates[arrivalField] = 'NOW()';
+            } else if (newStatus === 'completed') {
+                const completedField = side === 'center' ? 'center_completed_at' : 'home_completed_at';
+                perSideUpdates[completedField] = 'NOW()';
+            }
+            
+            // Update per-side pending_report_types
+            const currentPending = parsePendingReportTypes(currentRow.pending_report_types || '');
+            if (newStatus === 'partially_completed') {
+                currentPending[side] = requestPendingTypes;
+            } else if (newStatus === 'completed') {
+                currentPending[side] = [];
+            }
+            finalPendingString = serializePendingReportTypes(currentPending);
+            
+            // Compute overall status from both sides
+            const centerStatus = side === 'center' ? newStatus : (currentRow.center_medical_status || null);
+            const homeStatus = side === 'technician' ? newStatus : (currentRow.home_medical_status || null);
+            
+            finalMainStatus = computeOverallStatus(centerStatus, homeStatus);
+            finalMedicalStatus = newStatus; // Keep individual side status for logging
+            
+        } else {
+            // Simple flow: center/home only
+            if (newStatus === 'arrived') {
+                finalMainStatus = 'checked_in';
+                finalMedicalStatus = 'arrived';
+            } else if (newStatus === 'in_process') {
+                finalMainStatus = 'medical_in_process';
+                finalMedicalStatus = 'in_process';
+            } else if (newStatus === 'partially_completed') {
+                finalPendingString = requestPendingTypes.length > 0 ? requestPendingTypes.join(',') : null;
+                finalMainStatus = 'medical_partially_completed';
+                finalMedicalStatus = 'partially_completed';
+            } else if (newStatus === 'completed') {
+                finalPendingString = null;
+                finalMainStatus = 'medical_completed';
+                finalMedicalStatus = 'completed';
+            }
         }
 
-        if (newStatus === 'in_process') {
-            updateFields.push('status = ?');
-            updateValues.push('medical_in_process');
-            newMainStatus = 'medical_in_process';
+        // Build update fields in deterministic order to avoid misaligned values
+        const updateFields = [];
+        const updateValues = [];
+
+        // For Both appointments, update per-side fields AND sync main medical_status to combined status
+        if (currentRow.visit_type === 'Both' && actorContext) {
+            for (const [field, value] of Object.entries(perSideUpdates)) {
+                if (value === 'NOW()') {
+                    updateFields.push(`${field} = NOW()`);
+                } else {
+                    updateFields.push(`${field} = ?`);
+                    updateValues.push(value);
+                }
+            }
+
+            // Sync main medical_status to computed overall status for reporting/completion
+            if (finalMainStatus) {
+                updateFields.push('medical_status = ?');
+                updateValues.push(finalMainStatus);
+            }
+        } else {
+            // Simple flow: update main medical_status
+            updateFields.push('medical_status = ?');
+            updateValues.push(finalMedicalStatus);
         }
 
-        if (newStatus === 'partially_completed') {
-            updateFields.push('status = ?');
-            updateValues.push('medical_partially_completed');
-            newMainStatus = 'medical_partially_completed';
+        updateFields.push('status = ?');
+        updateValues.push(finalMainStatus);
 
-            // handle pending_report_types
-            updateFields.push('pending_report_types = ?');
-            updateValues.push(pendingTypesString);
-
-        }
-
-        if (newStatus !== 'partially_completed') {
-            // For other statuses, clear pending_report_types
-            updateFields.push('pending_report_types = NULL');
-        }
-
-        if (newStatus === 'completed') {
-            updateFields.push('status = ?');
-            updateValues.push('medical_completed');
-            newMainStatus = 'medical_completed';
-        }
+        updateFields.push('pending_report_types = ?');
+        updateValues.push(finalPendingString);
 
         if (additionalData) {
             if (additionalData.aadhaar_number !== undefined) {
@@ -371,48 +621,161 @@ async function updateMedicalStatus(appointmentId, newStatus, additionalData, use
             }
         }
 
-        // The last value is for WHERE clause
+        updateFields.push('updated_at = NOW()');
+        updateFields.push('updated_by = ?');
+        updateValues.push(userId);
+
         updateValues.push(appointmentId);
 
-        // Log the final query and values before executing
         const finalQuery = `UPDATE appointments SET ${updateFields.join(', ')} WHERE id = ?`;
-        // console.log("Executing query:", finalQuery);
-        // console.log("With values:", updateValues);
+        logOperationEnd('PREPARE_UPDATE_QUERY', appointmentId, {
+            query: finalQuery,
+            fields: updateFields,
+            values: updateValues
+        });
 
         await connection.query(finalQuery, updateValues);
 
-        // Update test statuses if center is specified
-        if (centerId && ['arrived', 'in_process'].includes(newStatus)) {
-            await connection.query(
-                `UPDATE appointment_tests 
-                 SET status = ?, updated_at = NOW() 
-                 WHERE appointment_id = ? 
-                 AND assigned_center_id = ? 
-                 AND visit_subtype = 'center'`,
-                [newStatus === 'arrived' ? 'Ready' : 'In Progress', appointmentId, centerId]
-            );
+        // Update appointment_tests based on visit type and context
+        if (['arrived', 'in_process', 'completed', 'partially_completed'].includes(newStatus)) {
+            let testStatus = 'In Progress';
+            let isCompleted = 0;
+
+            if (newStatus === 'arrived') {
+                testStatus = 'Ready';
+            } else if (newStatus === 'in_process') {
+                testStatus = 'In Progress';
+            } else if (newStatus === 'completed') {
+                testStatus = 'Completed';
+                isCompleted = 1;
+            } else if (newStatus === 'partially_completed') {
+                const hasPending = Array.isArray(requestPendingTypes) && requestPendingTypes.length > 0;
+                testStatus = hasPending ? 'Pending' : 'Completed';
+                isCompleted = hasPending ? 0 : 1;
+            }
+
+            let visitSubtype;
+            if (currentRow.visit_type === 'Both' && actorContext) {
+                // Both appointment: update only the side that's being updated
+                visitSubtype = actorContext.type === 'center' ? 'center' : 'home';
+            } else if (!actorContext) {
+                // Simple Center/Home visit without actorContext
+                visitSubtype = currentRow.visit_type === 'Home_Visit' ? 'home' : 'center';
+            }
+
+            if (visitSubtype) {
+                // For partial completion, set per-test status: Pending only for report types explicitly passed
+                if (newStatus === 'partially_completed') {
+                    // Load tests with report_type info
+                    const [tests] = await connection.query(
+                        `SELECT at.id, at.visit_subtype,
+                                t.report_type AS test_report_type,
+                                tc.report_type AS category_report_type
+                         FROM appointment_tests at
+                         LEFT JOIN tests t ON at.test_id = t.id
+                         LEFT JOIN test_categories tc ON at.category_id = tc.id
+                         WHERE at.appointment_id = ? AND at.visit_subtype = ?`,
+                        [appointmentId, visitSubtype]
+                    );
+
+                    const pendingSet = new Set((requestPendingTypes || []).map((r) => String(r).toLowerCase()));
+
+                    for (const row of Array.isArray(tests) ? tests : []) {
+                        let reportType = row.test_report_type || row.category_report_type || '';
+                        // Normalize to string before checking startsWith
+                        if (Array.isArray(reportType)) {
+                            reportType = reportType[0] || '';
+                        }
+                        if (reportType && typeof reportType === 'string' && reportType.startsWith('[')) {
+                            try {
+                                const arr = JSON.parse(reportType);
+                                reportType = Array.isArray(arr) && arr.length > 0 ? arr[0] : '';
+                            } catch (e) {
+                                reportType = '';
+                            }
+                        }
+                        const normalized = String(reportType || '').toLowerCase();
+                        const keepPending = normalized && pendingSet.has(normalized);
+                        const rowStatus = keepPending ? 'Pending' : 'Completed';
+                        const rowCompleted = keepPending ? 0 : 1;
+
+                        await connection.query(
+                            `UPDATE appointment_tests
+                             SET status = ?,
+                                 is_completed = ?,
+                                 updated_at = NOW(),
+                                 updated_by = ?
+                             WHERE id = ?`,
+                            [rowStatus, rowCompleted, userId, row.id]
+                        );
+                    }
+
+                    logTestUpdates(appointmentId, currentRow.visit_type, {
+                        side: visitSubtype,
+                        newStatus: testStatus,
+                        isCompleted,
+                        affectedRows: Array.isArray(tests) ? tests.length : 0
+                    });
+                } else {
+                    const [testUpdateResult] = await connection.query(
+                        `UPDATE appointment_tests
+                         SET status = ?,
+                             is_completed = ?,
+                             updated_at = NOW(),
+                             updated_by = ?
+                         WHERE appointment_id = ?
+                         AND visit_subtype = ?`,
+                        [testStatus, isCompleted, userId, appointmentId, visitSubtype]
+                    );
+
+                    logTestUpdates(appointmentId, currentRow.visit_type, {
+                        side: visitSubtype,
+                        newStatus: testStatus,
+                        isCompleted,
+                        affectedRows: testUpdateResult?.affectedRows || 0
+                    });
+                }
+            }
         }
 
         await logStatusHistory(appointmentId, {
             old_status: currentRow.status || null,
-            new_status: newMainStatus || currentRow.status || null,
+            new_status: finalMainStatus || currentRow.status || null,
             old_medical_status: currentRow.medical_status,
-            new_medical_status: newStatus,
+            new_medical_status: finalMedicalStatus,
             changed_by: userId,
             change_type: 'medical_status_update',
             remarks: additionalData?.medical_remarks || null,
             metadata: {
                 ...(additionalData || {}),
-                pending_report_types: pendingTypesString
+                pending_report_types: finalPendingString
             }
         }, connection);
 
         await connection.commit();
 
+        const [finalState] = await connection.query('SELECT * FROM appointments WHERE id = ?', [appointmentId]);
+        if (finalState && finalState[0]) {
+            logDBState('AFTER_COMMIT', appointmentId, finalState[0]);
+        }
+
+        logOperationEnd('UPDATE_MEDICAL_STATUS', appointmentId, {
+            success: true,
+            finalMedicalStatus: newStatus,
+            finalMainStatus: currentRow.status || null,
+            finalPendingString: null
+        });
+
         return { success: true, message: 'Medical status updated successfully' };
     } catch (error) {
         await connection.rollback();
         logger.error('Error in updateMedicalStatus:', error);
+        const { appointmentLogger } = require('../../lib/appointmentLogger');
+        appointmentLogger.error('UPDATE_MEDICAL_STATUS FAILED', {
+            appointmentId,
+            error: error.message,
+            stack: error.stack
+        });
         throw error;
     } finally {
         connection.release();
@@ -458,7 +821,6 @@ async function bulkMarkTestsCompleted(appointmentId, testIds, updatedBy, remarks
             throw new Error('No test IDs provided');
         }
 
-        // Update all tests in bulk
         const placeholders = testIds.map(() => '?').join(',');
         const updateSql = `
             UPDATE appointment_tests 
@@ -473,13 +835,11 @@ async function bulkMarkTestsCompleted(appointmentId, testIds, updatedBy, remarks
 
         await connection.execute(updateSql, [updatedBy, remarks, appointmentId, ...testIds]);
 
-        // Check if all tests for this appointment are completed
         const [allTests] = await connection.execute(
             'SELECT COUNT(*) as total, SUM(is_completed) as completed FROM appointment_tests WHERE appointment_id = ?',
             [appointmentId]
         );
 
-        // If all tests completed, update appointment status
         if (allTests[0] && allTests[0].total === allTests[0].completed) {
             await connection.execute(
                 `UPDATE appointments 
@@ -509,16 +869,19 @@ async function completeAppointment(appointmentId, userId) {
     try {
         await connection.beginTransaction();
 
-        const [rows] = await connection.query(
-            'SELECT status, medical_status FROM appointments WHERE id = ? FOR UPDATE',
-            [appointmentId]
-        );
+        logOperationStart('COMPLETE_APPOINTMENT_FINAL', appointmentId, { userId });
 
-        const current = Array.isArray(rows) ? rows[0] : rows;
+        const [appointment] = await connection.query('SELECT status, medical_status FROM appointments WHERE id = ? FOR UPDATE', [appointmentId]);
 
-        if (!current) {
+        if (!appointment || appointment.length === 0) {
             throw new Error('Appointment not found');
         }
+
+        if (appointment[0].status === 'pushed_back') {
+            throw new Error('Appointment is already pushed back');
+        }
+
+        logDBState('BEFORE_COMPLETE_APPOINTMENT', appointmentId, appointment[0]);
 
         await connection.query(
             `UPDATE appointments 
@@ -528,21 +891,28 @@ async function completeAppointment(appointmentId, userId) {
         );
 
         await logStatusHistory(appointmentId, {
-            old_status: current.status || null,
+            old_status: appointment[0].status,
             new_status: 'completed',
-            old_medical_status: current.medical_status || null,
-            new_medical_status: current.medical_status || null,
+            old_medical_status: appointment[0].medical_status,
+            new_medical_status: 'completed',
             changed_by: userId,
-            change_type: 'status_complete',
-            remarks: 'Appointment marked completed via report confirmation',
-            metadata: {}
+            change_type: 'appointment_complete',
+            remarks: 'Appointment marked as fully completed from reports'
         }, connection);
 
         await connection.commit();
+
+        const [finalState] = await connection.query('SELECT * FROM appointments WHERE id = ?', [appointmentId]);
+        if (finalState && finalState[0]) {
+            logDBState('AFTER_COMPLETE_APPOINTMENT', appointmentId, finalState[0]);
+        }
+        logOperationEnd('COMPLETE_APPOINTMENT_FINAL', appointmentId, { success: true });
+
         return { success: true, message: 'Appointment marked as completed' };
     } catch (error) {
         await connection.rollback();
         logger.error('Error in completeAppointment:', error);
+        logOperationEnd('COMPLETE_APPOINTMENT_FINAL', appointmentId, { success: false, error: error.message });
         throw error;
     } finally {
         connection.release();

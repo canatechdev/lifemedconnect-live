@@ -7,6 +7,7 @@ const db = require('../../lib/dbconnection');
 const logger = require('../../lib/logger');
 const ApprovalQueue = require('./ApprovalQueue');
 const { getHandler } = require('./handlers');
+const coreAppointments = require('../appointments');
 const { getEntityTable, getDisallowedFields, getFieldTypeHints, GLOBAL_DISALLOWED_FIELDS } = require('./config/entityConfig');
 const { normalizeValue } = require('./utils/normalizers');
 const { ACTION_TYPES } = require('./config/approvalRules');
@@ -51,7 +52,16 @@ class ApprovalService {
             }
 
             // Apply the changes to the actual entity
-            await this.applyApprovedChanges(connection, approval);
+            logger.info('Applying approved changes', {
+                approvalId,
+                entity_type: approval.entity_type,
+                entity_id: approval.entity_id,
+                action_type: approval.action_type,
+                new_data_keys: approval.new_data ? Object.keys(approval.new_data) : [],
+                has_medical_status: !!approval.new_data?.medical_status
+            });
+
+            await this.applyApprovedChanges(connection, approval, { reviewedBy });
 
             // Clear pending approval flag
             await this.queue.updateEntityPendingFlag(approval.entity_type, approval.entity_id, 0, connection);
@@ -128,11 +138,86 @@ class ApprovalService {
      * @param {Object} approval - Approval object
      * @returns {Promise<void>}
      */
-    async applyApprovedChanges(connection, approval) {
+    async applyApprovedChanges(connection, approval, context = {}) {
         const { entity_type, entity_id, action_type, new_data, old_data } = approval;
 
         // Get entity handler if available
         const handler = getHandler(entity_type);
+
+        logger.info('applyApprovedChanges start', {
+            entity_type,
+            entity_id,
+            action_type,
+            has_handler: !!handler,
+            new_data_keys: new_data ? Object.keys(new_data) : [],
+            has_medical_status: !!new_data?.medical_status
+        });
+
+        // Special handling: appointment medical_status updates must go through core flow to update tests/statuses
+        if (entity_type === 'appointment' && new_data?.medical_status) {
+            // Extract actorContext if it was stored in the approval request
+            let actorContext = new_data._actorContext || null;
+
+            // Fallback: infer actorContext from requesting user's center/technician when missing
+            if (!actorContext && approval.requested_by) {
+                try {
+                    const [users] = await connection.query('SELECT center_id, diagnostic_center_id, technician_id FROM users WHERE id = ?', [approval.requested_by]);
+                    if (users && users[0]) {
+                        const centerId = users[0].center_id || users[0].diagnostic_center_id || null;
+                        const technicianId = users[0].technician_id || null;
+                        actorContext = centerId
+                            ? { centerId, type: 'center' }
+                            : (technicianId ? { technicianId, type: 'technician' } : null);
+                    }
+                } catch (e) {
+                    // leave actorContext null if lookup fails
+                }
+            }
+
+            // Final fallback: infer from appointment data for Both
+            if (!actorContext) {
+                try {
+                    const [apptRows] = await connection.query('SELECT visit_type, center_id, other_center_id, center_confirmed_at, home_confirmed_at FROM appointments WHERE id = ?', [entity_id]);
+                    if (apptRows && apptRows[0] && apptRows[0].visit_type === 'Both') {
+                        const appt = apptRows[0];
+                        if (!appt.center_confirmed_at && appt.home_confirmed_at) {
+                            actorContext = { centerId: appt.other_center_id, type: 'technician' };
+                        } else if (appt.center_confirmed_at && !appt.home_confirmed_at) {
+                            actorContext = { centerId: appt.center_id, type: 'center' };
+                        } else {
+                            // both or neither: default to center side
+                            actorContext = { centerId: appt.center_id, type: 'center' };
+                        }
+                    }
+                } catch (e) {
+                    // leave null if lookup fails
+                }
+            }
+            
+            logger.info('applyApprovedChanges: appointment medical_status detected - delegating to updateMedicalStatus', {
+                entity_id,
+                medical_status: new_data.medical_status,
+                has_pending: Array.isArray(new_data.pending_report_types) || typeof new_data.pending_report_types === 'string',
+                reviewer: context.reviewedBy || null,
+                actorContext: actorContext
+            });
+
+            const additionalData = {
+                medical_remarks: new_data.medical_remarks,
+                pending_report_types: new_data.pending_report_types
+            };
+
+            // Pass actorContext if available (for Both appointments); null for simple Center/Home
+            await coreAppointments.updateMedicalStatus(
+                entity_id,
+                new_data.medical_status,
+                additionalData,
+                context.reviewedBy || approval.requested_by || null,
+                actorContext
+            );
+
+            return;
+        }
 
         switch (action_type) {
             case ACTION_TYPES.CREATE:

@@ -266,21 +266,24 @@ class TestsService extends BaseService {
    */
   async checkTestNameAvailability(name, excludeId = null) {
     try {
-      if (!name || !name.trim()) {
+      const trimmedName = name?.trim();
+
+      if (!trimmedName) {
         return {
           available: true,
-          message: 'Name is available'
+          message: 'Name is available',
+          suggestions: []
         };
       }
 
-      logger.info('Checking test name availability', { name, excludeId });
+      logger.info('Checking test name availability', { name: trimmedName, excludeId });
 
       let sql = `
         SELECT id FROM tests
         WHERE test_name = ?
         AND is_deleted = 0
       `;
-      const params = [name];
+      const params = [trimmedName];
 
       if (excludeId) {
         sql += ' AND id != ?';
@@ -290,16 +293,44 @@ class TestsService extends BaseService {
       const rows = await db.query(sql, params);
       const isAvailable = rows.length === 0;
 
+      // Fetch similar names to help the user avoid near-duplicates
+      // Build a broader LIKE pattern to catch spacing differences (e.g., "abc def" vs "abcdef")
+      const wildcardName = `%${trimmedName.replace(/\s+/g, '%')}%`;
+
+      // Prefer closest matches first using LENGTH as a lightweight heuristic
+      const suggestionsQuery = `
+        SELECT test_name
+        FROM tests
+        WHERE is_deleted = 0
+          AND test_name LIKE ?
+          ${excludeId ? 'AND id != ?' : ''}
+        ORDER BY ABS(LENGTH(test_name) - LENGTH(?)) ASC, test_name ASC
+        LIMIT 3
+      `;
+      const suggestionsParams = [
+        wildcardName,
+        ...(excludeId ? [excludeId] : []),
+        trimmedName
+      ];
+
+      const suggestionRows = await db.query(suggestionsQuery, suggestionsParams);
+      const suggestions = suggestionRows
+        .map(row => row.test_name)
+        // Remove the exact match if present
+        .filter(s => s.toLowerCase() !== trimmedName.toLowerCase());
+
       logger.info('Test name availability checked', {
-        name,
-        available: isAvailable
+        name: trimmedName,
+        available: isAvailable,
+        suggestionsCount: suggestions.length
       });
 
       return {
         available: isAvailable,
         message: isAvailable
           ? 'Name is available'
-          : 'A test with this name already exists'
+          : 'A test with this name already exists',
+        suggestions
       };
     } catch (error) {
       logger.error('Error checking test name availability', {
