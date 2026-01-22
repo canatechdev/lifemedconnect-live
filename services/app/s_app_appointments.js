@@ -27,7 +27,7 @@ async function getTechnicianIdByUser(userId) {
     return rows[0]?.id || null;
 }
 
-async function listTechnicianAppointments({ userId, page = 1, limit = 10, search = '', upcomingOnly = false }) {
+async function listTechnicianAppointments({ userId, page = 1, limit = 10, search = '', upcomingOnly = false, todayOnly = false, statusGroup = null }) {
     const technicianId = await getTechnicianIdByUser(userId);
     if (!technicianId) {
         return { data: [], pagination: { total: 0, page, limit, pages: 0 } };
@@ -46,9 +46,19 @@ async function listTechnicianAppointments({ userId, page = 1, limit = 10, search
         searchParams.push(like, like, like);
     }
 
-    if (upcomingOnly) {
+    if (todayOnly) {
+        // Normalize to IST (+05:30) to match local app day boundaries
+        conditions.push(`DATE(CONVERT_TZ(COALESCE(a.confirmed_date, a.appointment_date), '+00:00', '+05:30')) = DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+05:30'))`);
+        conditions.push(`a.medical_status NOT IN ('medical_completed', 'completed')`);
+    } else if (upcomingOnly) {
         conditions.push(`a.confirmed_date IS NOT NULL`);
         conditions.push(`a.confirmed_date > CURDATE()`); // tomorrow onwards
+    }
+
+    if (statusGroup === 'completed') {
+        conditions.push(`a.medical_status IN ('completed', 'medical_completed')`);
+    } else if (statusGroup === 'pending') {
+        conditions.push(`a.medical_status IN ('pending','rescheduled','scheduled','arrived','in_process','partially_completed','medical_partially_completed')`);
     }
 
     conditions.push('a.is_deleted = 0');
@@ -75,9 +85,9 @@ async function listTechnicianAppointments({ userId, page = 1, limit = 10, search
             a.insurer_id,
             i.insurer_name,
             a.visit_type,
-            a.appointment_date,
+            DATE_FORMAT(a.appointment_date, '%d-%m-%Y') AS appointment_date,
             a.appointment_time,
-            a.confirmed_date,
+            DATE_FORMAT(a.confirmed_date, '%d-%m-%Y') AS confirmed_date,
             a.confirmed_time,
             a.medical_status,
             a.split_type,
@@ -251,4 +261,6 @@ module.exports = {
     getTechnicianIdByUser,
     getTechnicianAppointmentDetails,
     getTechnicianContextForAppointment,
+    // Convenience wrapper for today
+    listTechnicianTodayAppointments: (params) => listTechnicianAppointments({ ...params, todayOnly: true }),
 };

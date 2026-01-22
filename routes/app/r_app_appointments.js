@@ -41,6 +41,35 @@ router.get('/appointments', verifyToken, async (req, res) => {
     }
 });
 
+// GET /api/app/appointments/status/:group
+// group: pending|completed
+router.get('/appointments/status/:group', verifyToken, async (req, res) => {
+    try {
+        const group = (req.params.group || '').toLowerCase();
+        const allowed = ['pending', 'completed'];
+        if (!allowed.includes(group)) {
+            return ApiResponse.appError(res, 'Invalid status group', 400);
+        }
+
+        const page = parseInt(req.query.page, 10) || 1;
+        const limit = parseInt(req.query.limit, 10) || 10;
+        const search = req.query.q || '';
+
+        const result = await appointmentService.listTechnicianAppointments({
+            userId: req.user.id,
+            page,
+            limit,
+            search,
+            statusGroup: group
+        });
+
+        return ApiResponse.paginated(res, result.data, result.pagination);
+    } catch (error) {
+        logger.error('App status-filter appointments (technician) failed', { error: error.message, userId: req.user?.id });
+        return ApiResponse.appError(res, 'Failed to fetch appointments', 500);
+    }
+});
+
 // GET /api/app/appointments/upcoming
 // List upcoming appointments (confirmed_date tomorrow onwards) assigned to technician
 router.get('/appointments/upcoming', verifyToken, async (req, res) => {
@@ -61,6 +90,28 @@ router.get('/appointments/upcoming', verifyToken, async (req, res) => {
     } catch (error) {
         logger.error('App upcoming appointments (technician) failed', { error: error.message, userId: req.user?.id });
         return ApiResponse.appError(res, 'Failed to fetch upcoming appointments', 500);
+    }
+});
+
+// GET /api/app/appointments/today
+// List today's appointments assigned to technician (by confirmed_date fallback appointment_date)
+router.get('/appointments/today', verifyToken, async (req, res) => {
+    try {
+        const page = parseInt(req.query.page, 10) || 1;
+        const limit = parseInt(req.query.limit, 10) || 10;
+        const search = req.query.q || '';
+
+        const result = await appointmentService.listTechnicianTodayAppointments({
+            userId: req.user.id,
+            page,
+            limit,
+            search
+        });
+
+        return ApiResponse.paginated(res, result.data, result.pagination);
+    } catch (error) {
+        logger.error('App today appointments (technician) failed', { error: error.message, userId: req.user?.id });
+        return ApiResponse.appError(res, 'Failed to fetch today appointments', 500);
     }
 });
 
