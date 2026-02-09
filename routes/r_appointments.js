@@ -363,6 +363,13 @@ router.put('/appointments/:id',
             req.body.confirmed_time = toMySqlTime(req.body.confirmed_time);
         }
 
+        // If optional contact numbers are omitted, explicitly null them to allow clearing
+        ['customer_alt_mobile', 'customer_service_no'].forEach(field => {
+            if (!Object.prototype.hasOwnProperty.call(req.body, field)) {
+                req.body[field] = null;
+            }
+        });
+
         req.body.updated_by = req.user.id;
 
         const result = await updateWithApproval({

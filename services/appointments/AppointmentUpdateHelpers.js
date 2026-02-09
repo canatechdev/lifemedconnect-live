@@ -4,6 +4,7 @@
  */
 
 const db = require('../../lib/dbconnection');
+const logger = require('../../lib/logger');
 const { emptyToNull } = require('../../lib/normalizers');
 
 // Safe value handler - returns null for undefined/null/empty values
@@ -89,7 +90,7 @@ async function updateAppointmentBasicFields(connection, id, row) {
     for (const field of allowedFields) {
         if (Object.prototype.hasOwnProperty.call(row, field)) {
             updateFields.push(`${field} = ?`);
-            updateValues.push(safe(row[field]));
+            updateValues.push(emptyToNull(row[field]));
         }
     }
 

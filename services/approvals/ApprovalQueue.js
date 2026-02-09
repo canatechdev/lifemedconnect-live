@@ -130,18 +130,27 @@ class ApprovalQueue {
         const rows = await db.query(query, params);
 
         return rows.map(row => {
+            const oldData = row.old_data
+                ? typeof row.old_data === 'string'
+                    ? JSON.parse(row.old_data)
+                    : row.old_data
+                : null;
+            const newData = row.new_data
+                ? typeof row.new_data === 'string'
+                    ? JSON.parse(row.new_data)
+                    : row.new_data
+                : null;
+            
+            // Filter to only include changed fields (reduce API payload)
+            const { getChangedFields } = require('./utils/changeDetector');
+            const changedFields = oldData && newData ? getChangedFields(oldData, newData) : null;
+            
             const parsed = {
                 ...row,
-                old_data: row.old_data
-                    ? typeof row.old_data === 'string'
-                        ? JSON.parse(row.old_data)
-                        : row.old_data
-                    : null,
-                new_data: row.new_data
-                    ? typeof row.new_data === 'string'
-                        ? JSON.parse(row.new_data)
-                        : row.new_data
-                    : null
+                old_data: changedFields || oldData,
+                new_data: changedFields 
+                    ? Object.fromEntries(Object.entries(newData).filter(([k]) => changedFields.hasOwnProperty(k)))
+                    : newData
             };
 
             // For bulk test_rate updates, enhance entity_name
@@ -184,14 +193,23 @@ class ApprovalQueue {
         }
 
         const approval = rows[0];
+        const oldData = approval.old_data 
+            ? (typeof approval.old_data === 'string' ? JSON.parse(approval.old_data) : approval.old_data) 
+            : null;
+        const newData = approval.new_data 
+            ? (typeof approval.new_data === 'string' ? JSON.parse(approval.new_data) : approval.new_data) 
+            : null;
+        
+        // Filter to only include changed fields (reduce API payload)
+        const { getChangedFields } = require('./utils/changeDetector');
+        const changedFields = oldData && newData ? getChangedFields(oldData, newData) : null;
+        
         return {
             ...approval,
-            old_data: approval.old_data 
-                ? (typeof approval.old_data === 'string' ? JSON.parse(approval.old_data) : approval.old_data) 
-                : null,
-            new_data: approval.new_data 
-                ? (typeof approval.new_data === 'string' ? JSON.parse(approval.new_data) : approval.new_data) 
-                : null
+            old_data: changedFields || oldData,
+            new_data: changedFields 
+                ? Object.fromEntries(Object.entries(newData).filter(([k]) => changedFields.hasOwnProperty(k)))
+                : newData
         };
     }
 

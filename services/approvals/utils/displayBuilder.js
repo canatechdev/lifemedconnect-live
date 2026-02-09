@@ -94,9 +94,13 @@ const buildDisplayChanges = async (approval) => {
     // Standard single-record change detection
     const fields = new Set(Object.keys(newData));
     const resolver = createFieldResolver(approval.entity_type);
+    
+    // Computed fields that should not appear in change display
+    const COMPUTED_FIELDS = new Set(['total_amount', 'selected_items', 'test_ids', 'amount']);
 
     for (const field of fields) {
         if (shouldIgnoreField(field)) continue;
+        if (COMPUTED_FIELDS.has(field)) continue; // Skip computed fields
         
         const oldVal = oldData[field];
         const newVal = newData[field];

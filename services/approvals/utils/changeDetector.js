@@ -134,6 +134,34 @@ const hasActualChanges = (oldData, newData) => {
 };
 
 /**
+ * Get only the fields that changed between old and new data
+ * @param {Object} oldData - Original data
+ * @param {Object} newData - New data
+ * @returns {Object|null} Object with only changed fields, or null if no changes
+ */
+const getChangedFields = (oldData, newData) => {
+    if (!oldData || !newData) return null;
+    
+    const changed = {};
+    let hasChanges = false;
+    
+    for (const key in newData) {
+        if (shouldIgnoreField(key)) continue;
+        
+        const oldVal = oldData[key];
+        const newVal = newData[key];
+        
+        // Skip if values are equal
+        if (areValuesEqual(oldVal, newVal, key, { oldData, newData })) continue;
+        
+        changed[key] = oldVal;
+        hasChanges = true;
+    }
+    
+    return hasChanges ? changed : null;
+};
+
+/**
  * Generate human-readable changes summary
  * @param {Object} oldData - Original data
  * @param {Object} newData - New data
@@ -163,5 +191,6 @@ const generateChangesSummary = (oldData, newData) => {
 module.exports = {
     areValuesEqual,
     hasActualChanges,
+    getChangedFields,
     generateChangesSummary
 };

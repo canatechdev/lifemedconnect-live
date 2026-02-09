@@ -83,9 +83,9 @@ const conditionalCsrfProtection = (req, res, next) => {
         return next();
     }
 
-    // Skip CSRF for app APIs (native apps) under /api/app/*
+    // Skip CSRF for app APIs (native apps) under /api/app/* and telephony webhooks
     const url = req.originalUrl || '';
-    if (url.startsWith('/api/app/')) {
+    if (url.startsWith('/api/app/') || url.startsWith('/api/telephony/webhook')) {
         return next();
     }
 

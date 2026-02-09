@@ -85,24 +85,31 @@ class TelephonyService {
                 cleanNumber = '91' + cleanNumber;
             }
 
-            // Create call attempt record
+            // Create call attempt record (store agent_number for webhook matching)
             const attemptSql = `
                 INSERT INTO call_attempts (
                     appointment_id,
                     center_id,
                     customer_number,
+                    agent_number,
                     attempt_type,
                     attempt_status,
                     attempted_by,
                     attempted_at,
                     notes
-                ) VALUES (?, ?, ?, 'manual', 'initiated', ?, NOW(), ?)
+                ) VALUES (?, ?, ?, ?, 'manual', 'initiated', ?, NOW(), ?)
             `;
+
+            // Normalize agent number for storage (digits only)
+            const agentNumberStored = centerConfig.agentNumber
+                ? centerConfig.agentNumber.replace(/[^0-9]/g, '')
+                : null;
 
             const attemptResult = await query(attemptSql, [
                 appointmentId,
                 centerId,
                 cleanNumber,
+                agentNumberStored,
                 userId,
                 notes
             ]);
@@ -120,7 +127,6 @@ class TelephonyService {
             const apiParams = {
                 number: cleanNumber,
                 'agent-number': agentNumber, // Route to mobile with country code
-                param1: `appointment_${appointmentId}`, // Track appointment in webhook
                 recording: true, // Enable call recording
                 'agent-dial-first': false // Dial customer first
             };
@@ -199,6 +205,12 @@ class TelephonyService {
             
             if (callId) {
                 try {
+                    // Update call_attempts with call_id
+                    await query(
+                        'UPDATE call_attempts SET call_id = ? WHERE id = ?',
+                        [callId, attemptId]
+                    );
+                    
                     // Save to ongoing_calls table
                     await query(
                         `INSERT INTO ongoing_calls (
@@ -218,17 +230,19 @@ class TelephonyService {
                         ]
                     );
                     
-                    logger.info('Ongoing call saved successfully', { 
+                    logger.info('Call ID saved successfully', { 
                         callId, 
+                        attemptId,
                         appointmentId,
                         agentNumber,
                         customerNumber
                     });
                 } catch (dbError) {
-                    logger.error('Failed to save ongoing call', {
+                    logger.error('Failed to save call ID', {
                         error: dbError.message,
                         callId,
-                        appointmentId
+                        appointmentId,
+                        attemptId
                     });
                 }
             } else {
@@ -392,6 +406,12 @@ class TelephonyService {
             
             if (callId) {
                 try {
+                    // Update call_attempts with call_id
+                    await query(
+                        'UPDATE call_attempts SET call_id = ? WHERE id = ?',
+                        [callId, attemptId]
+                    );
+                    
                     // Save to ongoing_calls table
                     await query(
                         `INSERT INTO ongoing_calls (
@@ -411,16 +431,18 @@ class TelephonyService {
                         ]
                     );
                     
-                    logger.info('Ongoing call saved for browser call', { 
+                    logger.info('Call ID saved for browser call', { 
                         callId, 
+                        attemptId,
                         appointmentId,
                         customerNumber
                     });
                 } catch (dbError) {
-                    logger.error('Failed to save ongoing browser call', {
+                    logger.error('Failed to save call ID for browser call', {
                         error: dbError.message,
                         callId,
-                        appointmentId
+                        appointmentId,
+                        attemptId
                     });
                 }
             } else {
@@ -478,27 +500,34 @@ class TelephonyService {
         try {
             logger.info('Processing call webhook', { callId: webhookData.callid });
 
-            // Extract appointment ID from custom parameter
+            // Get appointment and center IDs from call_attempts table
             let appointmentId = null;
             let centerId = null;
 
-            if (webhookData.param1 && webhookData.param1.startsWith('appointment_')) {
-                appointmentId = parseInt(webhookData.param1.replace('appointment_', ''));
-            }
+            // First try to find by call_id if we have any attempts with that call_id
+            const [attemptByCallId] = await query(
+                'SELECT appointment_id, center_id FROM call_attempts WHERE call_id = ? LIMIT 1',
+                [webhookData.callid]
+            );
+            
+            if (attemptByCallId) {
+                appointmentId = attemptByCallId.appointment_id;
+                centerId = attemptByCallId.center_id;
+                logger.info('Found attempt by call_id', { callId: webhookData.callid, appointmentId, centerId });
+            } else {
+                // Fallback: recent attempt by appointment (order by created_at) — no agent_number dependency
+                const [recentAttempt] = await query(
+                    `SELECT ca.appointment_id, ca.center_id
+                     FROM call_attempts ca
+                     WHERE ca.attempt_status IN ('initiated', 'in_progress')
+                     ORDER BY ca.created_at DESC
+                     LIMIT 1`
+                );
 
-            // If we have appointment ID, get center ID
-            if (appointmentId) {
-                const appointmentSql = `
-                    SELECT center_id, other_center_id, visit_type
-                    FROM appointments
-                    WHERE id = ?
-                `;
-                const [appointment] = await query(appointmentSql, [appointmentId]);
-                
-                if (appointment) {
-                    // For now, use center_id as primary
-                    // TODO: Enhance to detect which center made the call
-                    centerId = appointment.center_id;
+                if (recentAttempt) {
+                    appointmentId = recentAttempt.appointment_id;
+                    centerId = recentAttempt.center_id;
+                    logger.info('Found recent attempt (fallback)', { appointmentId, centerId });
                 }
             }
 

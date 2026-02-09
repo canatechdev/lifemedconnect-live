@@ -81,7 +81,11 @@ const IGNORE_CHANGE_FIELDS = new Set([
     'created_at', 
     'has_pending_approval', 
     'updated_by', 
-    'created_by'
+    'created_by',
+    'total_amount',      // Computed field
+    'selected_items',    // Computed field (test assignments handled separately)
+    'test_ids',          // Computed field
+    'amount'             // Computed field
 ]);
 
 /**

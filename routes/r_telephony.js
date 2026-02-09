@@ -331,9 +331,10 @@ router.post('/webhook/call-data', async (req, res) => {
             });
         }
 
-        // Optional: IP whitelist check (configure in production)
+        // Optional: IP whitelist check (toggle via env)
+        const whitelistEnabled = (process.env.TELEPHONY_WEBHOOK_IP_WHITELIST_ENABLED === 'true');
         const allowedIPs = process.env.TELEPHONY_WEBHOOK_IPS?.split(',') || [];
-        if (allowedIPs.length > 0 && !allowedIPs.includes(req.ip)) {
+        if (whitelistEnabled && allowedIPs.length > 0 && !allowedIPs.includes(req.ip)) {
             logger.warn('Webhook request from unauthorized IP', { ip: req.ip });
             return res.status(403).json({
                 success: false,
