@@ -76,8 +76,11 @@ async function listAppointmentsByCenter({ page = 1, limit = 0, search = '', cent
         conditions.push(`(a.confirmed_date IS NULL OR a.confirmed_time IS NULL)`);
         conditions.push(`a.pushed_back = 0`);
     } else if (listType === 'confirmed') {
-        conditions.push(`a.confirmed_date IS NOT NULL`);
-        conditions.push(`a.confirmed_time IS NOT NULL`);
+        // For "Both" visit type, check center_confirmed_at and home_confirmed_at
+        conditions.push(`(
+            (a.visit_type != 'Both' AND a.confirmed_date IS NOT NULL AND a.confirmed_time IS NOT NULL) OR
+            (a.visit_type = 'Both' AND a.center_confirmed_at IS NOT NULL AND a.home_confirmed_at IS NOT NULL)
+        )`);
         conditions.push(`a.pushed_back = 0`);
         conditions.push(`a.medical_status NOT IN ('completed','medical_completed')`);
     } else if (listType === 'completed') {
@@ -373,8 +376,9 @@ async function listAllConfirmedAppointments({ page = 1, limit = 0, search = '', 
     const validSortOrder = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
 
     const conditions = [
-        `a.confirmed_date IS NOT NULL`,
-        `a.confirmed_time IS NOT NULL`,
+        // Confirmed logic: single-flow uses confirmed_date/time, both-flow uses per-side confirmations
+        `((a.visit_type != 'Both' AND a.confirmed_date IS NOT NULL AND a.confirmed_time IS NOT NULL)
+          OR (a.visit_type = 'Both' AND a.center_confirmed_at IS NOT NULL AND a.home_confirmed_at IS NOT NULL))`,
         `a.is_deleted = 0`,
         `(a.pushed_back = 0 OR a.status = 'qc_pushed_back')`
 

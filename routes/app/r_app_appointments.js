@@ -224,6 +224,8 @@ router.post('/appointments/:id/reschedule', verifyToken, async (req, res) => {
 
 // GET /api/app/appointments/:id/update-medical-status
 // Get appointment details for medical status update (similar to PATCH but as GET with query params)
+// additional used this get api to mark arrival in app while the img upload for this is done via post upload docs api 
+
 router.get('/appointments/:id/update-medical-status', verifyToken, async (req, res) => {
     try {
         const appointmentId = parseInt(req.params.id, 10);

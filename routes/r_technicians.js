@@ -9,11 +9,16 @@ const validateRequest = require('../middleware/validateRequest');
 const ApiResponse = require('../lib/response');
 const logger = require('../lib/logger');
 const { parsePaginationParams } = require('../lib/helpers');
+const { mixedUpload } = require('../lib/multer');
+const { processSingleFile } = require('../lib/fileUpload');
 
 const technicianSchema = Joi.object({
   user_id: Joi.number().integer().optional().allow(null),
   center_id: Joi.number().integer().required(),
   technician_code: Joi.string().max(50).required(),
+  technician_type: Joi.string().valid('On-Roll', 'In-House').default('In-House'),
+  rate_per_appointment: Joi.number().precision(2).default(0.00),
+  profile_pic: Joi.string().max(255).optional().allow(null, ''),
   full_name: Joi.string().max(255).required(),
   mobile: Joi.string().max(20).required(),
   email: Joi.string().email().max(255).optional().allow(null, ''),
@@ -22,7 +27,8 @@ const technicianSchema = Joi.object({
   home_address: Joi.string().optional().allow(null, ''),
   qualification: Joi.string().max(255).optional().allow(null, ''),
   experience_years: Joi.number().integer().min(0).optional().allow(null),
-  is_active: Joi.number().optional()
+  is_active: Joi.number().optional(),
+  profile_pic_remove: Joi.string().valid('true', 'false').optional()
 });
 
 const technicianUpdateSchema = technicianSchema.fork(Object.keys(technicianSchema.describe().keys), field => field.optional());
@@ -36,9 +42,9 @@ const deleteTechniciansSchema = Joi.object({
 router.get('/technicians', verifyToken, asyncHandler(async (req, res) => {
   const { page, limit, search, sortBy, sortOrder } = parsePaginationParams(req.query);
 
-  const result = await service.listTechnicians({ 
-    page, 
-    limit, 
+  const result = await service.listTechnicians({
+    page,
+    limit,
     search,
     sortBy,
     sortOrder
@@ -60,17 +66,43 @@ router.get('/technicians/:id', verifyToken, asyncHandler(async (req, res) => {
   }
   return ApiResponse.success(res, row);
 }));
-router.post('/technicians', verifyToken, requirePermission('technicians.create'), validateRequest(technicianSchema), asyncHandler(async (req, res) => {
-  const id = await service.createTechnician(req.body);
+router.post('/technicians', verifyToken, requirePermission('technicians.create'), mixedUpload.single('profile_pic_file'), validateRequest(technicianSchema), asyncHandler(async (req, res) => {
+  const profilePicPath = req.file ? await processSingleFile(req.file, 'technicians') : null;
+  const technicianData = {
+    ...req.body,
+    profile_pic: profilePicPath || req.body.profile_pic
+  };
+
+  if (req.body.profile_pic_remove === 'true') {
+    technicianData.profile_pic = null;
+  }
+  delete technicianData.profile_pic_remove;
+
+  const id = await service.createTechnician(technicianData);
   logger.info('Technician created', { technicianId: id, createdBy: req.user.id });
-  
+
   return ApiResponse.success(res, { id }, 'Technician created successfully', 201);
 }));
 
 
 
-router.put('/technicians/:id', verifyToken, requirePermission('technicians.update'), validateRequest(technicianUpdateSchema), asyncHandler(async (req, res) => {
-  const affected = await service.updateTechnician(req.params.id, req.body);
+router.put('/technicians/:id', verifyToken, requirePermission('technicians.update'), mixedUpload.single('profile_pic_file'), validateRequest(technicianUpdateSchema), asyncHandler(async (req, res) => {
+  let profilePicPath = null;
+  if (req.file) {
+    profilePicPath = await processSingleFile(req.file, 'technicians');
+  }
+
+  const updates = { ...req.body };
+  if (profilePicPath) {
+    updates.profile_pic = profilePicPath;
+  } else if (req.body.profile_pic_remove === 'true') {
+    updates.profile_pic = null;
+  }
+
+  // Remove the removal flag from updates if present
+  delete updates.profile_pic_remove;
+
+  const affected = await service.updateTechnician(req.params.id, updates);
   if (!affected) {
     return ApiResponse.notFound(res, 'Technician not found or no changes made');
   }

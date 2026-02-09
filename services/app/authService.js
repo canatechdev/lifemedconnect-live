@@ -8,6 +8,7 @@ const TECHNICIAN_ROLE_ID = 4; // current technician role
 const OTP_EXPIRY_MINUTES = 10;
 
 function mapUserResponse(user) {
+    const baseUrl = global.BASE_URL || '';
     return {
         id: user.id,
         username: user.username,
@@ -16,6 +17,9 @@ function mapUserResponse(user) {
         mobile: user.mobile,
         role_id: user.role_id,
         technician_id: user.technician_id || null,
+        technician_type: user.technician_type || null,
+        rate_per_appointment: user.rate_per_appointment ? Number(user.rate_per_appointment) : 0,
+        profile_pic: user.profile_pic ? `${baseUrl}/${user.profile_pic.replace(/\\/g, '/')}` : null,
         diagnostic_center_id: user.diagnostic_center_id || null,
     };
 }
@@ -158,7 +162,18 @@ async function requestOtp({ username, userId }) {
     let user;
     if (userId) {
         const rows = await db.query(
-            'SELECT u.*, t.id AS technician_id, dc.id AS diagnostic_center_id FROM users u LEFT JOIN technicians t ON u.id = t.user_id AND t.is_deleted = 0 LEFT JOIN diagnostic_centers dc ON u.id = dc.user_id AND dc.is_deleted = 0 WHERE u.id = ? LIMIT 1',
+            `SELECT 
+                u.*, 
+                t.id AS technician_id, 
+                t.technician_type,
+                t.rate_per_appointment,
+                t.profile_pic,
+                dc.id AS diagnostic_center_id 
+             FROM users u 
+             LEFT JOIN technicians t ON u.id = t.user_id AND t.is_deleted = 0 
+             LEFT JOIN diagnostic_centers dc ON u.id = dc.user_id AND dc.is_deleted = 0 
+             WHERE u.id = ? 
+             LIMIT 1`,
             [userId]
         );
         user = rows[0];

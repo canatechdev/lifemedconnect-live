@@ -1,9 +1,25 @@
 const db = require('../lib/dbconnection');
 
 async function createTechnician(row) {
-    const sql = `INSERT INTO technicians (user_id, center_id, technician_code, full_name, mobile, email, home_gps_latitude, home_gps_longitude, home_address, qualification, experience_years, is_active ,created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?, NOW(), NOW())`;
-    const params = [row.user_id, row.center_id, row.technician_code, row.full_name, row.mobile, row.email || null, row.home_gps_latitude || null, row.home_gps_longitude || null, row.home_address || null, row.qualification || null, row.experience_years || null, row.is_active ?? 1];
+    const sql = `INSERT INTO technicians (user_id, center_id, technician_code, technician_type, rate_per_appointment, profile_pic, full_name, mobile, email, home_gps_latitude, home_gps_longitude, home_address, qualification, experience_years, is_active ,created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`;
+    const params = [
+        row.user_id,
+        row.center_id,
+        row.technician_code,
+        row.technician_type || 'In-House',
+        row.rate_per_appointment || 0.00,
+        row.profile_pic || null,
+        row.full_name,
+        row.mobile,
+        row.email || null,
+        row.home_gps_latitude || null,
+        row.home_gps_longitude || null,
+        row.home_address || null,
+        row.qualification || null,
+        row.experience_years || null,
+        row.is_active ?? 1
+    ];
     const result = await db.query(sql, params);
     return result.insertId;
 }
@@ -83,14 +99,14 @@ async function updateTechnician(id, updates) {
 
 // soft delete Technicians
 async function softDeleteTechnician(ids) {
-  if (!ids.length) return 0;
+    if (!ids.length) return 0;
 
-  const placeholders = ids.map(() => '?').join(', ');
-  const sql = `UPDATE technicians SET is_deleted = 1, updated_at = NOW() WHERE id IN (${placeholders})`;
+    const placeholders = ids.map(() => '?').join(', ');
+    const sql = `UPDATE technicians SET is_deleted = 1, updated_at = NOW() WHERE id IN (${placeholders})`;
 
-  const result = await db.query(sql, ids);
+    const result = await db.query(sql, ids);
 
-  return result.affectedRows;
+    return result.affectedRows;
 }
 
 
@@ -100,6 +116,6 @@ async function deleteTechnician(id) { const result = await db.query('DELETE FROM
 
 
 
-module.exports = { createTechnician, listTechnicians, getTechnician, updateTechnician, deleteTechnician ,softDeleteTechnician};
+module.exports = { createTechnician, listTechnicians, getTechnician, updateTechnician, deleteTechnician, softDeleteTechnician };
 
 

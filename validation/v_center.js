@@ -68,6 +68,10 @@ const centerSchemas = {
     gps_longitude: Joi.number().precision(8).optional().allow(null, ''),
     is_active: Joi.optional(),
     letterhead_path: Joi.string().max(500).optional().allow(null, ''),
+    dc_photos: Joi.any().optional(), // For file uploads
+    existing_dc_photos: Joi.string().optional(), // For existing files tracking
+    dc_photos_remove: Joi.string().optional(), // For removal marker
+    letterhead_remove: Joi.string().optional(), // For removal marker
     associate_doctor_1_id: Joi.number().integer().optional().allow(null, ''),
     associate_doctor_2_id: Joi.number().integer().optional().allow(null, ''),
     associate_doctor_3_id: Joi.number().integer().optional().allow(null, ''),

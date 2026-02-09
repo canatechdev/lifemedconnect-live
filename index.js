@@ -1,7 +1,6 @@
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
-const socketIo = require('socket.io');
 const path = require('path');
 const cors = require('cors');
 const compression = require('compression');
@@ -56,14 +55,6 @@ testConnection()
 const config = getConfig();
 const app = express();
 const server = http.createServer(app);
-
-// Socket.IO configuration
-const io = socketIo(server, {
-    cors: {
-        origin: config.corsOrigin,
-        methods: ['GET', 'POST', 'PUT', 'DELETE'],
-    }
-});
 
 //  SECURITY MIDDLEWARE - ORDER MATTERS!
 // 1. Helmet (must be first) - Secure HTTP headers
@@ -145,6 +136,7 @@ const appAuthRoutes = require('./routes/app/auth');
 const appAppointmentRoutes = require('./routes/app/r_app_appointments');
 const appDashboardRoutes = require('./routes/app/r_app_dashboard');
 const rbacRoutes = require('./routes/r_rbac');
+const telephonyRoutes = require('./routes/r_telephony');
 
 // Health check route
 app.get('/', (req, res) => {
@@ -202,6 +194,7 @@ app.use('/api', bulkTestRoutes);
 app.use('/api', approvalRoutes);
 app.use('/api',dashboard)
 app.use('/api', rbacRoutes);
+app.use('/api/telephony', telephonyRoutes);
 // App (mobile) routes (no CSRF)
 app.use('/api/app', appAuthRoutes);
 app.use('/api/app', appAppointmentRoutes);
@@ -235,18 +228,6 @@ app.use(csrfErrorHandler);
 // Global error handler (must be last)
 app.use(errorHandler);
 
-// WebSocket connection handling
-io.on('connection', (socket) => {
-    logger.info('WebSocket: Client connected', { socketId: socket.id });
-
-    socket.on('disconnect', () => {
-        logger.info('WebSocket: Client disconnected', { socketId: socket.id });
-    });
-
-    socket.on('error', (error) => {
-        logger.error('WebSocket error:', error);
-    });
-});
 
 // Graceful shutdown
 const gracefulShutdown = async () => {
@@ -282,7 +263,7 @@ process.on('unhandledRejection', (reason, promise) => {
 
 // Start server
 const PORT = config.port;
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
     // Detect base URL
     const baseUrl = config.baseUrl || `http://localhost:${PORT}`;
     

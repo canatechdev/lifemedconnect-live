@@ -7,7 +7,7 @@ package-lock.json
 # ==========================
 # Environment variables
 # ==========================
-# .env
+.env
 .env.local
 .env.*.local
 
@@ -78,8 +78,8 @@ build/
 # Frontend build (public folder contents)
 # ==========================
 # Keep public folder structure but ignore build files
-# public/*
-# !public/.gitkeep
+public/*
+!public/.gitkeep
 
 # ==========================
 # Test coverage
@@ -99,9 +99,9 @@ docs/
 scripts/
 s_appointments.js
 
-# ==========================
-# Other archives and markdown
-# ==========================
+# # ==========================
+# # Other archives and markdown
+# # ==========================
 *.md
 *.zip
 *.rar

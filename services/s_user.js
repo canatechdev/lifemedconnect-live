@@ -16,6 +16,9 @@ const getUserByUsername = async (username) => {
         SELECT 
             u.*, 
             t.id AS technician_id,
+            t.technician_type,
+            t.rate_per_appointment,
+            t.profile_pic,
             dc.id AS diagnostic_center_id
         FROM users u
         LEFT JOIN technicians t ON u.id = t.user_id AND t.is_deleted = 0
@@ -23,7 +26,7 @@ const getUserByUsername = async (username) => {
         WHERE u.username = ?
         LIMIT 1
     `;
-    
+
     const users = await db.query(sql, [username]);
     return users[0];
 };
@@ -88,7 +91,7 @@ const getAllUsers = async ({ page = 1, limit = 0, search = '', sortBy = 'id', so
         FROM users${whereClause}
         ORDER BY ${validSortBy} ${validSortOrder}
     `;
-    
+
     const dataParams = [...searchParams];
 
     const numericLimit = Number(limit);
@@ -166,14 +169,14 @@ const updateUser = async (id, data) => {
 // softdelete user
 
 const softDeleteUser = async (ids) => {
-  if (!ids.length) return 0;
+    if (!ids.length) return 0;
 
-  const placeholders = ids.map(() => '?').join(', ');
-  const sql = `UPDATE users SET is_deleted = 1, updated_at = NOW() WHERE id IN (${placeholders})`;
+    const placeholders = ids.map(() => '?').join(', ');
+    const sql = `UPDATE users SET is_deleted = 1, updated_at = NOW() WHERE id IN (${placeholders})`;
 
-  const result = await db.query(sql, ids);
+    const result = await db.query(sql, ids);
 
-  return result.affectedRows;
+    return result.affectedRows;
 }
 
 

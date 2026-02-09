@@ -49,16 +49,30 @@ async function listTechnicianAppointments({ userId, page = 1, limit = 10, search
     if (todayOnly) {
         // Normalize to IST (+05:30) to match local app day boundaries
         conditions.push(`DATE(CONVERT_TZ(COALESCE(a.confirmed_date, a.appointment_date), '+00:00', '+05:30')) = DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+05:30'))`);
-        conditions.push(`a.medical_status NOT IN ('medical_completed', 'completed')`);
+        // Exclude completed appointments from today's list
+        conditions.push(`(a.medical_status NOT IN ('medical_completed', 'completed') OR a.medical_status IS NULL)`);
+        conditions.push(`(a.home_medical_status NOT IN ('medical_completed', 'completed') OR a.home_medical_status IS NULL)`);
+        conditions.push(`a.status NOT IN ('completed', 'medical_completed')`);
     } else if (upcomingOnly) {
         conditions.push(`a.confirmed_date IS NOT NULL`);
         conditions.push(`a.confirmed_date > CURDATE()`); // tomorrow onwards
+        // Exclude completed/medical_completed from upcoming list
+        conditions.push(`(a.medical_status NOT IN ('medical_completed', 'completed') OR a.medical_status IS NULL)`);
+        conditions.push(`(a.home_medical_status NOT IN ('medical_completed', 'completed') OR a.home_medical_status IS NULL)`);
+        conditions.push(`a.status NOT IN ('completed', 'medical_completed')`);
     }
 
     if (statusGroup === 'completed') {
-        conditions.push(`a.medical_status IN ('completed', 'medical_completed')`);
+        conditions.push(`(
+            a.medical_status IN ('completed', 'medical_completed') OR
+            a.home_medical_status IN ('completed', 'medical_completed') 
+        )`);
     } else if (statusGroup === 'pending') {
-        conditions.push(`a.medical_status IN ('pending','rescheduled','scheduled','arrived','in_process','partially_completed','medical_partially_completed')`);
+        conditions.push(`a.medical_status NOT IN ('completed', 'medical_completed')`);
+        conditions.push(`(a.home_medical_status NOT IN ('completed', 'medical_completed') OR a.home_medical_status IS NULL)`);
+        conditions.push(`a.status NOT IN ('completed', 'medical_completed')`);
+        // Keep explicit pending statuses but exclusion of completion is more important here
+        // conditions.push(`a.medical_status IN ('pending','rescheduled','scheduled','arrived','in_process','partially_completed','medical_partially_completed')`);
     }
 
     conditions.push('a.is_deleted = 0');

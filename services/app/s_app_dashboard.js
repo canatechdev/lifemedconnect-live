@@ -13,7 +13,7 @@ async function getTechnicianDashboardCounts(userId) {
             return {
                 total_appointments: 0,
                 todays_appointments: 0,
-                assigned_appointments: 0,
+                pending_appointments: 0,
                 rejected_appointments: 0,
             };
         }
@@ -25,7 +25,7 @@ async function getTechnicianDashboardCounts(userId) {
               AND a.is_deleted = 0
         `;
 
-        const [totalRows, todayRows, assignedRows, rejectedRows] = await Promise.all([
+        const [totalRows, todayRows, pendingRows, rejectedRows] = await Promise.all([
             db.query(`SELECT COUNT(DISTINCT a.id) AS count ${baseConditions}`, [technicianId]),
             db.query(`
                 SELECT COUNT(DISTINCT a.id) AS count ${baseConditions}
@@ -33,8 +33,8 @@ async function getTechnicianDashboardCounts(userId) {
             `, [technicianId]),
             db.query(`
                 SELECT COUNT(DISTINCT a.id) AS count ${baseConditions}
-                AND COALESCE(a.pushed_back, 0) = 0
                 AND a.status NOT IN ('cancelled')
+                AND (a.medical_status NOT IN ('completed', 'medical_completed') OR a.medical_status IS NULL)
             `, [technicianId]),
             db.query(`
                 SELECT COUNT(DISTINCT a.id) AS count ${baseConditions}
@@ -45,7 +45,7 @@ async function getTechnicianDashboardCounts(userId) {
         return {
             total_appointments: totalRows[0]?.count || 0,
             todays_appointments: todayRows[0]?.count || 0,
-            assigned_appointments: assignedRows[0]?.count || 0,
+            pending_appointments: pendingRows[0]?.count || 0,
             rejected_appointments: rejectedRows[0]?.count || 0,
         };
     } catch (error) {
@@ -54,6 +54,52 @@ async function getTechnicianDashboardCounts(userId) {
     }
 }
 
+async function getTechnicianStats(userId) {
+    try {
+        const rows = await db.query(
+            'SELECT id, rate_per_appointment FROM technicians WHERE user_id = ? AND is_deleted = 0 LIMIT 1',
+            [userId]
+        );
+        const technician = rows[0];
+        if (!technician) {
+            return {
+                rate_per_appointment: 0,
+                completed_count: 0,
+                total_earnings: 0
+            };
+        }
+
+        const rate = technician.rate_per_appointment ? Number(technician.rate_per_appointment) : 0;
+
+        // Count distinct appointments with completed status
+        // We look at medical_status and home_medical_status
+        const countQuery = `
+            SELECT COUNT(DISTINCT a.id) as count
+            FROM appointments a
+            JOIN appointment_tests at ON a.id = at.appointment_id
+            WHERE at.assigned_technician_id = ?
+              AND a.is_deleted = 0
+              AND (
+                  a.medical_status IN ('completed', 'medical_completed') OR
+                  a.home_medical_status IN ('completed', 'medical_completed')
+              )
+        `;
+
+        const countResult = await db.query(countQuery, [technician.id]);
+        const completedCount = countResult[0]?.count || 0;
+
+        return {
+            rate_per_appointment: rate,
+            completed_count: completedCount,
+            total_earnings: completedCount * rate
+        };
+    } catch (error) {
+        logger.error('Error fetching technician stats', { error: error.message, userId });
+        throw new Error('Failed to fetch technician stats');
+    }
+}
+
 module.exports = {
     getTechnicianDashboardCounts,
+    getTechnicianStats,
 };

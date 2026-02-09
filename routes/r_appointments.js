@@ -654,7 +654,8 @@ router.patch('/appointments/:id/reschedule',
                 normalizedDate,
                 normalizedTime,
                 reschedule_reason,
-                req.user.id
+                req.user.id,
+                actorContext
             ),
             new_data: {
                 confirmed_date: normalizedDate,
@@ -1151,7 +1152,7 @@ router.delete('/appointments/customer-images/:imageId',
 // Push back to reports
 router.patch('/appointments/:id/push-back-to-reports',
     verifyToken,
-    requirePermission('appointments.qc'),
+    requirePermission('appointments.qc_pushback'),
     validateRequest(pushBackToReportsSchema),
     asyncHandler(async (req, res) => {
         const appointmentId = parseInt(req.params.id);
@@ -1164,7 +1165,7 @@ router.patch('/appointments/:id/push-back-to-reports',
 // Push back to reports (alternative route)
 router.post('/appointments/:id/qc/push-back',
     verifyToken,
-    requirePermission('appointments.qc'),
+    requirePermission('appointments.qc_pushback'),
     validateRequest(pushBackToReportsSchema),
     asyncHandler(async (req, res) => {
         const appointmentId = parseInt(req.params.id);
@@ -1349,7 +1350,7 @@ router.post('/appointments/:id/reports',
 // Submit reports for QC
 router.post('/appointments/:id/submit-for-qc',
     verifyToken,
-    requirePermission('appointments.upload_docs'),
+    requirePermission('appointments.submit_qc'),
     asyncHandler(async (req, res) => {
         const appointmentId = parseInt(req.params.id);
         const result = await service.submitReportsForQC(appointmentId, req.user.id);

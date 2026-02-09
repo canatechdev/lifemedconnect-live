@@ -196,7 +196,7 @@ async function confirmSchedule(appointmentId, confirmedDate, confirmedTime, user
 /**
  * Center reschedule appointment
  */
-async function rescheduleAppointment(appointmentId, newConfirmedDate, newConfirmedTime, remarks, userId) {
+async function rescheduleAppointment(appointmentId, newConfirmedDate, newConfirmedTime, remarks, userId, actorContext = null) {
     const connection = await db.pool.getConnection();
     try {
         await connection.beginTransaction();
@@ -205,11 +205,12 @@ async function rescheduleAppointment(appointmentId, newConfirmedDate, newConfirm
             newConfirmedDate,
             newConfirmedTime,
             remarks,
-            userId
+            userId,
+            actorContext
         });
 
         const [current] = await connection.query(
-            'SELECT confirmed_date, confirmed_time, medical_status FROM appointments WHERE id = ? FOR UPDATE',
+            'SELECT visit_type, confirmed_date, confirmed_time, medical_status, center_confirmed_at, home_confirmed_at, center_medical_status, home_medical_status FROM appointments WHERE id = ? FOR UPDATE',
             [appointmentId]
         );
 
@@ -217,51 +218,100 @@ async function rescheduleAppointment(appointmentId, newConfirmedDate, newConfirm
             throw new Error('Appointment not found');
         }
 
-        const { confirmed_date, confirmed_time, medical_status } = current[0];
-        logDBState('BEFORE_RESCHEDULE', appointmentId, current[0]);
+        const currentRow = current[0];
+        const visitType = currentRow.visit_type;
+        logDBState('BEFORE_RESCHEDULE', appointmentId, currentRow);
 
-        const oldDateValue = confirmed_date;
-        const oldTime = confirmed_time;
+        // For Both appointments with actorContext, update per-side fields
+        if (visitType === 'Both' && actorContext) {
+            const side = actorContext.type; // 'center' or 'technician'
+            const updateFields = [];
+            const updateValues = [];
+            
+            const newDateTime = new Date(`${newConfirmedDate} ${newConfirmedTime}`);
 
-        let oldDate = null;
-        if (oldDateValue instanceof Date) {
-            const year = oldDateValue.getFullYear();
-            const month = String(oldDateValue.getMonth() + 1).padStart(2, '0');
-            const day = String(oldDateValue.getDate()).padStart(2, '0');
-            oldDate = `${year}-${month}-${day}`;
-        } else if (typeof oldDateValue === 'string') {
-            oldDate = oldDateValue.split('T')[0];
-        }
-
-        if (oldDate && oldTime && oldDate === newConfirmedDate && oldTime === newConfirmedTime) {
-            throw new Error('Reschedule must be different from existing schedule date and time');
-        }
-
-        await connection.query(
-            `UPDATE appointments 
-             SET 
-                 confirmed_date = ?,
-                 confirmed_time = ?,
-                 medical_status = 'rescheduled',
-                 updated_at = NOW(),
-                 updated_by = ?
-             WHERE id = ?`,
-            [newConfirmedDate, newConfirmedTime, userId, appointmentId]
-        );
-
-        await logStatusHistory(appointmentId, {
-            old_medical_status: medical_status,
-            new_medical_status: 'rescheduled',
-            changed_by: userId,
-            change_type: 'schedule_reschedule',
-            remarks: remarks || 'Appointment rescheduled',
-            metadata: {
-                previous_confirmed_date: confirmed_date,
-                previous_confirmed_time: confirmed_time,
-                new_confirmed_date: newConfirmedDate,
-                new_confirmed_time: newConfirmedTime
+            if (side === 'center') {
+                updateFields.push('center_confirmed_at = ?');
+                updateValues.push(newDateTime);
+                updateFields.push('center_medical_status = ?');
+                updateValues.push('rescheduled');
+                updateFields.push('center_reschedule_remark = ?');
+                updateValues.push(remarks || 'Center visit rescheduled');
+            } else {
+                updateFields.push('home_confirmed_at = ?');
+                updateValues.push(newDateTime);
+                updateFields.push('home_medical_status = ?');
+                updateValues.push('rescheduled');
+                updateFields.push('home_reschedule_remark = ?');
+                updateValues.push(remarks || 'Home visit rescheduled');
             }
-        }, connection);
+
+            updateFields.push('updated_at = NOW()');
+            updateFields.push('updated_by = ?');
+            updateValues.push(userId);
+            updateValues.push(appointmentId);
+
+            await connection.query(
+                `UPDATE appointments SET ${updateFields.join(', ')} WHERE id = ?`,
+                updateValues
+            );
+
+            await logStatusHistory(appointmentId, {
+                old_medical_status: side === 'center' ? currentRow.center_medical_status : currentRow.home_medical_status,
+                new_medical_status: 'rescheduled',
+                changed_by: userId,
+                change_type: 'schedule_reschedule',
+                remarks: `${side === 'center' ? 'Center' : 'Home'} visit rescheduled: ${remarks || ''}`,
+                metadata: {
+                    side: side,
+                    new_confirmed_datetime: newDateTime
+                }
+            }, connection);
+        } else {
+            // Single center/home flow - use existing fields
+            const oldDateValue = currentRow.confirmed_date;
+            const oldTime = currentRow.confirmed_time;
+
+            let oldDate = null;
+            if (oldDateValue instanceof Date) {
+                const year = oldDateValue.getFullYear();
+                const month = String(oldDateValue.getMonth() + 1).padStart(2, '0');
+                const day = String(oldDateValue.getDate()).padStart(2, '0');
+                oldDate = `${year}-${month}-${day}`;
+            } else if (typeof oldDateValue === 'string') {
+                oldDate = oldDateValue.split('T')[0];
+            }
+
+            if (oldDate && oldTime && oldDate === newConfirmedDate && oldTime === newConfirmedTime) {
+                throw new Error('Reschedule must be different from existing schedule date and time');
+            }
+
+            await connection.query(
+                `UPDATE appointments 
+                 SET 
+                     confirmed_date = ?,
+                     confirmed_time = ?,
+                     medical_status = 'rescheduled',
+                     updated_at = NOW(),
+                     updated_by = ?
+                 WHERE id = ?`,
+                [newConfirmedDate, newConfirmedTime, userId, appointmentId]
+            );
+
+            await logStatusHistory(appointmentId, {
+                old_medical_status: currentRow.medical_status,
+                new_medical_status: 'rescheduled',
+                changed_by: userId,
+                change_type: 'schedule_reschedule',
+                remarks: remarks || 'Appointment rescheduled',
+                metadata: {
+                    previous_confirmed_date: currentRow.confirmed_date,
+                    previous_confirmed_time: currentRow.confirmed_time,
+                    new_confirmed_date: newConfirmedDate,
+                    new_confirmed_time: newConfirmedTime
+                }
+            }, connection);
+        }
 
         await connection.commit();
 

@@ -136,6 +136,13 @@ router.put(
   uploadFields,
   validateRequest(centerSchemas.update),
   asyncHandler(async (req, res) => {
+    // Log entire req.body to debug
+    logger.info('🔵 [CENTER-UPDATE] Full req.body contents:', {
+      bodyContents: req.body,
+      bodyKeys: Object.keys(req.body),
+      bodyEntries: Object.entries(req.body).map(([key, value]) => ({ key, value, type: typeof value }))
+    });
+    
     logger.info('🔵 [CENTER-UPDATE] Starting update request', {
       centerId: req.params.id,
       userId: req.user.id,
@@ -143,18 +150,36 @@ router.put(
       fileFields: req.files ? Object.keys(req.files) : [],
       bodyKeys: Object.keys(req.body),
       existing_dc_photos: req.body.existing_dc_photos,
+      existing_dc_photos_type: typeof req.body.existing_dc_photos,
       letterhead_path_in_body: req.body.letterhead_path,
       dc_photos_in_body: req.body.dc_photos,
       dc_photos_remove: req.body.dc_photos_remove,
       letterhead_remove: req.body.letterhead_remove
     });
 
-    const existingPhotos = req.body.existing_dc_photos || '[]';
+    // Parse existing_dc_photos if it's a string
+    let existingPhotos = req.body.existing_dc_photos || '[]';
+    if (typeof existingPhotos === 'string') {
+      try {
+        // If it's already a JSON string, parse and re-stringify to ensure consistency
+        const parsed = JSON.parse(existingPhotos);
+        existingPhotos = JSON.stringify(parsed);
+      } catch (e) {
+        // If parsing fails, treat as empty array
+        existingPhotos = '[]';
+      }
+    } else if (Array.isArray(existingPhotos)) {
+      // If it's an array, stringify it
+      existingPhotos = JSON.stringify(existingPhotos);
+    }
+    
     const filePaths = await extractFilePaths(req.files, existingPhotos);
 
     logger.info('🔵 [CENTER-UPDATE] File paths extracted', {
       filePaths,
-      existingPhotos
+      existingPhotos,
+      existingPhotosType: typeof req.body.existing_dc_photos,
+      existingPhotosRaw: req.body.existing_dc_photos
     });
 
     let isActive = req.body.is_active;
@@ -190,7 +215,7 @@ router.put(
       // Check for explicit removal markers
       // Frontend sends: letterhead_remove, dc_photos_remove
       const removalMarkerField = field.replace('_path', '') + '_remove';
-      const hasRemovalMarker = req.body[removalMarkerField] === 'true';
+      const hasRemovalMarker = req.body[removalMarkerField] === 'true' || req.body[removalMarkerField] === true;
       
       logger.info(`🔵 [CENTER-UPDATE] Checking field: ${field}`, {
         hasNewFile: !!hasNewFile,
@@ -201,21 +226,29 @@ router.put(
         bodyValue: req.body[field],
         removalMarkerField,
         removalMarkerValue: req.body[removalMarkerField],
-        filePathValue: filePaths[field]
+        filePathValue: filePaths[field],
+        filePathType: typeof filePaths[field]
       });
       
-      if (hasNewFile || hasRemovalFlag || hasExistingData || hasRemovalMarker) {
-        // User made a change to this field - include it in updates
-        if (hasRemovalMarker) {
-          // Explicit removal - set to null
-          updateData[field] = null;
-          logger.info(`🔵 [CENTER-UPDATE] Including ${field} in updates (REMOVAL):`, null);
+      if (hasRemovalMarker) {
+        // Explicit removal - set to null or empty array for dc_photos
+        if (field === 'dc_photos') {
+          updateData[field] = '[]'; // Empty JSON array for dc_photos
         } else {
-          updateData[field] = filePaths[field];
-          logger.info(`🔵 [CENTER-UPDATE] Including ${field} in updates:`, filePaths[field]);
+          updateData[field] = null;
         }
+        logger.info(` [CENTER-UPDATE] Including ${field} in updates (REMOVAL):`, updateData[field]);
+      } else if (hasNewFile || hasRemovalFlag || hasExistingData) {
+        // User made a change to this field - include it in updates
+        // For dc_photos, always use the value from filePaths (which includes existing_dc_photos)
+        updateData[field] = filePaths[field];
+        logger.info(` [CENTER-UPDATE] Including ${field} in updates:`, {
+          value: filePaths[field],
+          length: filePaths[field]?.length,
+          reason: hasNewFile ? 'new_file' : hasRemovalFlag ? 'removal_flag' : 'existing_data'
+        });
       } else {
-        logger.info(`🔵 [CENTER-UPDATE] Skipping ${field} - no changes detected`);
+        logger.info(` [CENTER-UPDATE] Skipping ${field} - no changes detected`);
       }
       // If none of the above, don't include the field (no change)
     });
@@ -225,7 +258,7 @@ router.put(
       if (updateData[f] === '') updateData[f] = null;
     });
 
-    logger.info('🔵 [CENTER-UPDATE] Final update data', {
+    logger.info(' [CENTER-UPDATE] Final update data', {
       updateDataKeys: Object.keys(updateData),
       letterhead_path: updateData.letterhead_path,
       dc_photos: updateData.dc_photos
