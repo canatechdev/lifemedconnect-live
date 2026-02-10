@@ -7,10 +7,19 @@ const ExcelJS = require('exceljs');
 const xlsx = require('xlsx');
 const db = require('../../lib/dbconnection');
 const logger = require('../../lib/logger');
-const approvalHelper = require('../../lib/approvalHelper');
-const createWithApproval = approvalHelper?.createWithApproval;
 const { appointmentCreateSchema } = require('../../validation/v_appointments');
 const { createAppointment } = require('./AppointmentCRUD');
+
+// Lazy getter to avoid circular require warnings
+const getCreateWithApproval = () => {
+    try {
+        const approvalHelper = require('../../lib/approvalHelper');
+        return approvalHelper?.createWithApproval;
+    } catch (e) {
+        logger.warn('createWithApproval not available (lazy load failed)', { error: e.message });
+        return null;
+    }
+};
 
 /**
  * Generate Excel template for appointment upload
