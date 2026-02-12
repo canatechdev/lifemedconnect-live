@@ -103,7 +103,12 @@ async function listTechnicianAppointments({ userId, page = 1, limit = 10, search
             a.appointment_time,
             DATE_FORMAT(a.confirmed_date, '%d-%m-%Y') AS confirmed_date,
             a.confirmed_time,
-            a.medical_status,
+            CASE 
+                WHEN a.visit_type = 'home' THEN a.home_medical_status
+                WHEN a.visit_type = 'both' THEN a.home_medical_status
+                ELSE a.medical_status
+            END AS medical_status,
+            a.home_medical_status,
             a.split_type,
             a.status AS appointment_status,
             a.customer_first_name,
@@ -196,7 +201,12 @@ async function getTechnicianAppointmentDetails({ userId, appointmentId }) {
             a.appointment_time,
             a.confirmed_date,
             a.confirmed_time,
-            a.medical_status,
+            CASE 
+                WHEN a.visit_type = 'home' THEN a.home_medical_status
+                WHEN a.visit_type = 'both' THEN a.home_medical_status
+                ELSE a.medical_status
+            END AS medical_status,
+            a.home_medical_status,
             a.split_type,
             a.status AS appointment_status,
             a.customer_first_name,
