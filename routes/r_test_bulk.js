@@ -7,7 +7,7 @@ const { asyncHandler } = require('../middleware/errorHandler');
 const logger = require('../lib/logger');
 const ApiResponse = require('../lib/response');
 
-// ⭐ NEW: Import security middleware
+// NEW: Import security middleware
 const { uploadLimiter } = require('../middleware/security');
 
 // ===================================
@@ -28,7 +28,7 @@ router.get('/test-bulk/download-my-rates', asyncHandler(service.downloadMyRates)
 // ===================================
 // UPLOAD RATES – WITH TOKEN VERIFICATION
 // ===================================
-// ⭐ NEW: Apply upload rate limiter (30 uploads per 15 minutes)
+// NEW: Apply upload rate limiter (30 uploads per 15 minutes)
 router.post('/test-bulk/upload', verifyToken, uploadLimiter, excelUpload.single('excelFile'), asyncHandler(service.uploadRates));
 
 // ===================================

@@ -10,6 +10,7 @@ const ApiResponse = require('../lib/response');
 const logger = require('../lib/logger');
 const axios = require('axios');
 const { createWithApproval, updateWithApproval, deleteWithApproval, formatApprovalResponse } = require('../lib/approvalHelper');
+const { getConfig } = require('../lib/config');
 
 //  NEW: Import security middleware
 const { loginLimiter, strictLimiter } = require('../middleware/security');
@@ -34,7 +35,7 @@ const registerSchema = Joi.object({
 const loginSchema = Joi.object({
     username: Joi.string().required(),
     password: Joi.string().required(),
-    // captchaToken:Joi.string().required()
+    captchaToken: Joi.string().optional()
 });
 
 // Joi schema for user update
@@ -74,19 +75,41 @@ router.post('/auth/register', validateRequest(registerSchema), asyncHandler(asyn
 }));
 
 // POST /api/auth/login
-// ⭐ NEW: Apply login rate limiter (10 attempts per 15 minutes)
+//  NEW: Apply login rate limiter (10 attempts per 15 minutes)
 router.post('/auth/login', loginLimiter, validateRequest(loginSchema), asyncHandler(async (req, res) => {
     const { username, password, captchaToken } = req.body;
+    const config = getConfig();
 
-    // Verify the captcha token with Google
-    // const secret = process.env.RECAPTCHA_SECRET_KEY;
-    // const captchaResponse = await axios.post(`https://www.google.com/recaptcha/api/siteverify`, null, {
-    //     params: { secret, response: captchaToken },
-    // });
+    // Verify the captcha token with Google only if enabled
+    if (config.recaptcha.enabled) {
+        if (!captchaToken) {
+            return ApiResponse.forbidden(res, 'CAPTCHA token is required');
+        }
 
-    // if (!captchaResponse.data.success) {
-    //     return ApiResponse.forbidden(res, 'Failed captcha verification');
-    // }
+        const secret = process.env.RECAPTCHA_SECRET_KEY;
+        logger.info('Captcha verification start', {
+            hasSecret: !!secret,
+            tokenPreview: typeof captchaToken === 'string' ? `${captchaToken.substring(0, 8)}...` : 'invalid',
+        });
+
+        const captchaResponse = await axios.post(`https://www.google.com/recaptcha/api/siteverify`, null, {
+            params: { secret, response: captchaToken },
+        });
+
+        if (!captchaResponse.data.success) {
+            logger.warn('Captcha verification failed', {
+                errorCodes: captchaResponse.data['error-codes'],
+                hostname: captchaResponse.data.hostname,
+                action: captchaResponse.data.action,
+                remoteip: captchaResponse.data.remoteip,
+                score: captchaResponse.data.score,
+            });
+            const reason = Array.isArray(captchaResponse.data['error-codes'])
+                ? captchaResponse.data['error-codes'].join(', ')
+                : 'Failed captcha verification';
+            return ApiResponse.forbidden(res, reason);
+        }
+    }
     
     // Continue with user authentication
     const user = await s_user.getUserByUsername(username);

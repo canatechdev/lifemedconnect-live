@@ -25,11 +25,17 @@ async function getTechnicianDashboardCounts(userId) {
               AND a.is_deleted = 0
         `;
 
+        // Use home_confirmed_at for BOTH visits; confirmed_date otherwise
+        const confirmDateExpr = `CASE WHEN LOWER(a.visit_type) = 'both' THEN a.home_confirmed_at ELSE a.confirmed_date END`;
+
         const [totalRows, todayRows, pendingRows, rejectedRows] = await Promise.all([
             db.query(`SELECT COUNT(DISTINCT a.id) AS count ${baseConditions}`, [technicianId]),
             db.query(`
                 SELECT COUNT(DISTINCT a.id) AS count ${baseConditions}
-                AND DATE(COALESCE(a.confirmed_date, a.appointment_date)) = CURDATE()
+                AND DATE(CONVERT_TZ(${confirmDateExpr}, '+00:00', '+05:30')) = DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+05:30'))
+                AND (a.medical_status NOT IN ('completed', 'medical_completed') OR a.medical_status IS NULL)
+                AND (a.home_medical_status NOT IN ('completed', 'medical_completed') OR a.home_medical_status IS NULL)
+                AND a.status NOT IN ('completed', 'medical_completed')
             `, [technicianId]),
             db.query(`
                 SELECT COUNT(DISTINCT a.id) AS count ${baseConditions}

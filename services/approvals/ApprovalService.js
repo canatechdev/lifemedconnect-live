@@ -231,7 +231,16 @@ class ApprovalService {
 
             case ACTION_TYPES.UPDATE:
                 // For UPDATE, apply the new data
-                await this.updateEntity(connection, entity_type, entity_id, new_data, { old_data, handler });
+                // First let handler process rich fields (e.g., selected_items)
+                if (handler) {
+                    await handler.update(connection, entity_id, new_data, { old_data });
+                }
+
+                // Prevent non-column fields like selected_items from hitting the generic DB update
+                const sanitizedData = { ...new_data };
+                delete sanitizedData.selected_items;
+
+                await this.updateEntity(connection, entity_type, entity_id, sanitizedData, { old_data, handler: null });
                 break;
 
             case ACTION_TYPES.DELETE:

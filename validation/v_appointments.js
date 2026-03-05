@@ -178,6 +178,8 @@ const appointmentBulkUpdateSchema = Joi.object({
     ids: Joi.array().items(Joi.number().integer().positive()).min(1).required(),
     center_id: Joi.number().integer().positive().optional().allow(null),
     assigned_technician_id: Joi.number().integer().positive().optional(),
+    cost_type: Joi.string().optional().allow(null),
+    amount: Joi.number().optional().allow(null),
     status: Joi.string().optional()
 });
 

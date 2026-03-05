@@ -18,9 +18,33 @@ const areValuesEqual = (oldValue, newValue, key, context = {}) => {
     // Both empty-like
     if (isEmptyLike(oldValue) && isEmptyLike(newValue)) return true;
     
-    // Special handling for selected_items
+    // Helper to compare selected_items arrays (order-insensitive by id)
+    const compareSelectedItems = (a, b) => {
+        const arrA = Array.isArray(a) ? a : [];
+        const arrB = Array.isArray(b) ? b : [];
+        if (arrA.length !== arrB.length) return false;
+        const normalize = (item) => ({
+            id: item.id ?? null,
+            assigned_center_id: item.assigned_center_id ?? null,
+            assigned_technician_id: item.assigned_technician_id ?? null,
+            visit_subtype: item.visit_subtype ?? null,
+            rate: Number(item.rate)
+        });
+        const mapA = arrA.map(normalize).sort((x, y) => Number(x.id) - Number(y.id));
+        const mapB = arrB.map(normalize).sort((x, y) => Number(x.id) - Number(y.id));
+        return mapA.every((item, idx) => {
+            const other = mapB[idx];
+            return item.id === other.id &&
+                item.assigned_center_id === other.assigned_center_id &&
+                item.assigned_technician_id === other.assigned_technician_id &&
+                item.visit_subtype === other.visit_subtype &&
+                item.rate === other.rate;
+        });
+    };
+
+    // Special handling for selected_items (deep compare)
     if (key === 'selected_items') {
-        if (isEmptyLike(oldValue) && isEmptyLike(newValue)) return true;
+        return compareSelectedItems(oldValue, newValue);
     }
     
     // Special handling for *_ids arrays (order-insensitive)

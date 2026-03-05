@@ -244,13 +244,25 @@ router.get('/appointments/:id/update-medical-status', verifyToken, async (req, r
             return ApiResponse.appError(res, 'Not authorized for this appointment', 403);
         }
 
+        // Fetch technician's center for actor context
+        const [techData] = await db.query(
+            'SELECT center_id FROM technicians WHERE id = ?',
+            [technicianId]
+        );
+
+        const actorContext = {
+            technicianId: technicianId,
+            centerId: techData[0]?.center_id || null,
+            type: 'technician'
+        };
+
         // Update medical status
         const result = await coreAppointments.updateMedicalStatus(
             appointmentId,
             medical_status,
             {},
             req.user.id,
-            null
+            actorContext
         );
 
         return ApiResponse.appSuccess(res, 'Medical status updated successfully', result);

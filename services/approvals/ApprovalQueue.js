@@ -141,7 +141,19 @@ class ApprovalQueue {
                     : row.new_data
                 : null;
             
-            // Filter to only include changed fields (reduce API payload)
+            // Skip filtering for bulk operations (old_data is array, new_data is object)
+            // Bulk operations should show all new_data fields, not just changed ones
+            const isBulkOperation = Array.isArray(oldData) && newData && typeof newData === 'object';
+            
+            if (isBulkOperation) {
+                return {
+                    ...row,
+                    old_data: oldData,
+                    new_data: newData
+                };
+            }
+            
+            // For single-record operations, filter to only include changed fields
             const { getChangedFields } = require('./utils/changeDetector');
             const changedFields = oldData && newData ? getChangedFields(oldData, newData) : null;
             
@@ -200,7 +212,19 @@ class ApprovalQueue {
             ? (typeof approval.new_data === 'string' ? JSON.parse(approval.new_data) : approval.new_data) 
             : null;
         
-        // Filter to only include changed fields (reduce API payload)
+        // Skip filtering for bulk operations (old_data is array, new_data is object)
+        // Bulk operations should show all new_data fields, not just changed ones
+        const isBulkOperation = Array.isArray(oldData) && newData && typeof newData === 'object';
+        
+        if (isBulkOperation) {
+            return {
+                ...approval,
+                old_data: oldData,
+                new_data: newData
+            };
+        }
+        
+        // For single-record operations, filter to only include changed fields
         const { getChangedFields } = require('./utils/changeDetector');
         const changedFields = oldData && newData ? getChangedFields(oldData, newData) : null;
         

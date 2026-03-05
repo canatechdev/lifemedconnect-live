@@ -99,116 +99,116 @@ class TestBulkService extends BaseService {
   // DOWNLOAD RATES TEMPLATE
   // ===================================
 
-async downloadRatesTemplate(req, res) {
-  try {
-    logger.info("Generating rates template download");
+  async downloadRatesTemplate(req, res) {
+    try {
+      logger.info("Generating rates template download");
 
-    const workbook = new ExcelJS.Workbook();
-    const ws = workbook.addWorksheet("Rates Upload Template");
-    const lists = workbook.addWorksheet("Lists");
-    lists.state = "hidden";
+      const workbook = new ExcelJS.Workbook();
+      const ws = workbook.addWorksheet("Rates Upload Template");
+      const lists = workbook.addWorksheet("Lists");
+      lists.state = "hidden";
 
-    // Fetch lists
-    const [clientsRes, insurersRes, testsRes] = await Promise.all([
-      pool.pool.query(
-        "SELECT short_code FROM clients WHERE is_deleted = 0 AND has_pending_approval=0 ORDER BY short_code"
-      ),
-      pool.pool.query(
-        "SELECT short_code FROM insurers WHERE is_deleted = 0 AND has_pending_approval=0 ORDER BY short_code"
-      ),
-      pool.pool.query(
-        "SELECT test_name FROM tests WHERE is_deleted = 0 AND has_pending_approval=0 ORDER BY test_name"
-      ),
-    ]);
+      // Fetch lists
+      const [clientsRes, insurersRes, testsRes] = await Promise.all([
+        pool.pool.query(
+          "SELECT short_code FROM clients WHERE is_deleted = 0 AND has_pending_approval=0 ORDER BY short_code"
+        ),
+        pool.pool.query(
+          "SELECT short_code FROM insurers WHERE is_deleted = 0 AND has_pending_approval=0 ORDER BY short_code"
+        ),
+        pool.pool.query(
+          "SELECT test_name FROM tests WHERE is_deleted = 0 AND has_pending_approval=0 ORDER BY test_name"
+        ),
+      ]);
 
-    const clients = this.extractDataFromResult(clientsRes, "short_code");
-    const insurers = this.extractDataFromResult(insurersRes, "short_code");
-    const tests = this.extractDataFromResult(testsRes, "test_name");
+      const clients = this.extractDataFromResult(clientsRes, "short_code");
+      const insurers = this.extractDataFromResult(insurersRes, "short_code");
+      const tests = this.extractDataFromResult(testsRes, "test_name");
 
-    // Add lists in hidden sheet
-    lists.getColumn(1).values = ["Clients", ...clients];
-    lists.getColumn(2).values = ["Insurers", ...insurers];
-    lists.getColumn(3).values = ["Tests", ...tests];
+      // Add lists in hidden sheet
+      lists.getColumn(1).values = ["Clients", ...clients];
+      lists.getColumn(2).values = ["Insurers", ...insurers];
+      lists.getColumn(3).values = ["Tests", ...tests];
 
-    // ---- Worksheet Header ----
-    ws.getRow(1).values = [
-      "Client Short Code",
-      "Insurer Short Code",
-      "Type",
-      "Test Name",
-      "Description",
-      "Rate",
-    ];
+      // ---- Worksheet Header ----
+      ws.getRow(1).values = [
+        "Client Short Code",
+        "Insurer Short Code",
+        "Type",
+        "Test Name",
+        "Description",
+        "Rate",
+      ];
 
-    ws.getRow(1).font = { bold: true };
-    ws.getRow(1).alignment = { vertical: "middle", horizontal: "center" };
-    ws.getRow(1).fill = {
-      type: "pattern",
-      pattern: "solid",
-      fgColor: { argb: "FFE6E6FA" },
-    };
+      ws.getRow(1).font = { bold: true };
+      ws.getRow(1).alignment = { vertical: "middle", horizontal: "center" };
+      ws.getRow(1).fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FFE6E6FA" },
+      };
 
-    // ---- Set Column Widths ----
-    ws.columns = [
-      { width: 20 }, // Client
-      { width: 20 }, // Insurer
-      { width: 10 }, // Type
-      { width: 35 }, // Test Name
-      { width: 40 }, // Description
-      { width: 12 }, // Rate
-    ];
+      // ---- Set Column Widths ----
+      ws.columns = [
+        { width: 20 }, // Client
+        { width: 20 }, // Insurer
+        { width: 10 }, // Type
+        { width: 35 }, // Test Name
+        { width: 40 }, // Description
+        { width: 12 }, // Rate
+      ];
 
-    // ---- Data validations ----
-    const maxRows = 5000;
+      // ---- Data validations ----
+      const maxRows = 5000;
 
-    // Client dropdown
-    ws.dataValidations.add(`A2:A${maxRows}`, {
-      type: "list",
-      allowBlank: true,
-      formulae: [`Lists!$A$2:$A$${clients.length + 1}`],
-    });
+      // Client dropdown
+      ws.dataValidations.add(`A2:A${maxRows}`, {
+        type: "list",
+        allowBlank: true,
+        formulae: [`Lists!$A$2:$A$${clients.length + 1}`],
+      });
 
-    // Insurer dropdown
-    ws.dataValidations.add(`B2:B${maxRows}`, {
-      type: "list",
-      allowBlank: true,
-      formulae: [`Lists!$B$2:$B$${insurers.length + 1}`],
-    });
+      // Insurer dropdown
+      ws.dataValidations.add(`B2:B${maxRows}`, {
+        type: "list",
+        allowBlank: true,
+        formulae: [`Lists!$B$2:$B$${insurers.length + 1}`],
+      });
 
-    // Type fixed = test
-    for (let i = 2; i <= maxRows; i++) {
-      ws.getCell(`C${i}`).value = "test";
+      // Type fixed = test
+      for (let i = 2; i <= maxRows; i++) {
+        ws.getCell(`C${i}`).value = "test";
+      }
+
+      // ---- Test Name dropdown ----
+      ws.dataValidations.add(`D2:D${maxRows}`, {
+        type: "list",
+        allowBlank: true,
+        formulae: [`Lists!$C$2:$C$${tests.length + 1}`],
+      });
+
+      // ---- Send File ----
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      res.setHeader(
+        "Content-Disposition",
+        "attachment; filename=rates-upload-template.xlsx"
+      );
+
+      await workbook.xlsx.write(res);
+      res.end();
+
+      logger.info("Rates template downloaded successfully");
+    } catch (error) {
+      logger.error("Failed to generate rates template", {
+        error: error.message,
+        stack: error.stack,
+      });
+      return ApiResponse.error(res, "Failed to generate template", 500, error.message);
     }
-
-    // ---- Test Name dropdown ----
-    ws.dataValidations.add(`D2:D${maxRows}`, {
-      type: "list",
-      allowBlank: true,
-      formulae: [`Lists!$C$2:$C$${tests.length + 1}`],
-    });
-
-    // ---- Send File ----
-    res.setHeader(
-      "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    );
-    res.setHeader(
-      "Content-Disposition",
-      "attachment; filename=rates-upload-template.xlsx"
-    );
-
-    await workbook.xlsx.write(res);
-    res.end();
-
-    logger.info("Rates template downloaded successfully");
-  } catch (error) {
-    logger.error("Failed to generate rates template", {
-      error: error.message,
-      stack: error.stack,
-    });
-    return ApiResponse.error(res, "Failed to generate template", 500, error.message);
   }
-}
 
 
 
@@ -454,6 +454,7 @@ async downloadRatesTemplate(req, res) {
       const newApprovalRecords = [];
       const updatedOldRecords = [];
       const updatedNewRecords = [];
+      
 
       for (const { values, rowNumber } of dataRows) {
         const [
@@ -575,6 +576,7 @@ async downloadRatesTemplate(req, res) {
             error: rowError.message
           });
           // Continue to next row
+          errors.push({ row: rowNumber, error: rowError.message });
         }
       }
 
@@ -659,12 +661,12 @@ async downloadRatesTemplate(req, res) {
 
       await conn.commit();
 
-      const message = status === 'partial' 
+      const message = status === 'partial'
         ? 'Upload completed successfully. Records have been submitted for Super Admin approval.'
         : status === 'success'
-        ? 'Upload completed successfully'
-        : 'Upload completed with errors';
-        
+          ? 'Upload completed successfully'
+          : 'Upload completed with errors';
+
       res.json({
         message,
         summary: summary,
@@ -751,13 +753,36 @@ async downloadRatesTemplate(req, res) {
       const [logs] = await pool.pool.query(sql, params);
 
       // Parse summary for each log
-      const processedLogs = logs.map(log => ({
-        ...log,
-        summary: log.summary ? JSON.parse(log.summary) : {},
-        errors: log.errors ? JSON.parse(log.errors) : []
-      }));
+      // const processedLogs = logs.map(log => ({
+      //   ...log,
+      //   summary: log.summary ? JSON.parse(log.summary) : {},
+      //   errors: log.errors ? JSON.parse(log.errors) : []
+      // }));
+      const processedLogs = logs.map(log => {
+        let summary = {};
+        let errors = [];
 
-      const pagination = calculatePagination(numericPage, numericLimit, total);
+        try {
+          summary =
+            typeof log.summary === "string"
+              ? JSON.parse(log.summary)
+              : log.summary || {};
+        } catch { }
+
+        try {
+          errors =
+            typeof log.errors === "string"
+              ? JSON.parse(log.errors)
+              : log.errors || [];
+        } catch { }
+
+        return { ...log, summary, errors };
+      });
+
+      const pagination = {
+        ...calculatePagination(total, numericPage, numericLimit),
+        total_records: total
+      };
 
       return ApiResponse.paginated(res, processedLogs, pagination);
 

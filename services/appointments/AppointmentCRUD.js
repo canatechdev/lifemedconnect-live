@@ -85,6 +85,11 @@ async function createAppointment(row, connection = null) {
             });
         }
 
+        // Enforce amount = 0 when cost type is Credit
+        if (row.cost_type && String(row.cost_type).toLowerCase() === 'credit') {
+            row.amount = 0;
+        }
+
         const appointmentSql = `
             INSERT INTO appointments (
                 case_number, application_number, client_id, center_id, other_center_id, insurer_id,
@@ -208,16 +213,23 @@ async function createAppointment(row, connection = null) {
 /**
  * List appointments with pagination and search
  */
-async function listAppointments({ page = 1, limit = 0, search = '', sortBy = 'id', sortOrder = 'DESC' }) {
+async function listAppointments({ page = 1, limit = 0, search = '', sortBy = 'id', sortOrder = 'DESC', customerCategory = '' }) {
     const searchColumns = ['case_number', 'application_number', 'customer_first_name', 'customer_last_name', 'customer_mobile'];
     const searchParams = [];
-    let whereClause = '';
+    const conditions = [];
 
     if (search && search.trim() !== '') {
-        const conditions = searchColumns.map(col => `${col} LIKE ?`).join(' OR ');
-        whereClause = ` WHERE (${conditions})`;
+        const searchConditions = searchColumns.map(col => `${col} LIKE ?`).join(' OR ');
+        conditions.push(`(${searchConditions})`);
         searchColumns.forEach(() => searchParams.push(`%${search}%`));
     }
+
+    if (customerCategory) {
+        conditions.push('customer_category = ?');
+        searchParams.push(customerCategory);
+    }
+
+    const whereClause = conditions.length > 0 ? ` WHERE (${conditions.join(') AND (')})` : '';
 
     const allowedSortColumns = [
         'id', 'case_number', 'application_number', 'customer_first_name',
@@ -367,6 +379,14 @@ async function bulkUpdateAppointments(ids, updates) {
     const fields = [];
     const values = [];
 
+    // Enforce amount = 0 when cost type is Credit
+    if (updates && Object.prototype.hasOwnProperty.call(updates, 'cost_type')) {
+        const ct = updates.cost_type;
+        if (ct && String(ct).toLowerCase() === 'credit') {
+            updates.amount = 0;
+        }
+    }
+
     if (updates.assigned_technician_id !== undefined) {
         fields.push('assigned_technician_id = ?');
         values.push(updates.assigned_technician_id);
@@ -374,6 +394,14 @@ async function bulkUpdateAppointments(ids, updates) {
     if (updates.center_id !== undefined) {
         fields.push('center_id = ?');
         values.push(updates.center_id);
+    }
+    if (updates.cost_type !== undefined) {
+        fields.push('cost_type = ?');
+        values.push(updates.cost_type);
+    }
+    if (updates.amount !== undefined) {
+        fields.push('amount = ?');
+        values.push(updates.amount);
     }
     if (updates.status !== undefined) {
         fields.push('status = ?');

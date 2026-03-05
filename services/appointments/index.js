@@ -14,6 +14,9 @@ const AppointmentReports = require('./AppointmentReports');
 const AppointmentQC = require('./AppointmentQC');
 const AppointmentDocuments = require('./AppointmentDocuments');
 const AppointmentInvoice = require('./AppointmentInvoice');
+const AppointmentPathology = require('./AppointmentPathology');
+const AppointmentMasterPDF = require('./AppointmentMasterPDF');
+const AppointmentTPAPDF = require('./AppointmentComprehensivePDF');
 
 // Export all CRUD operations
 const {
@@ -191,5 +194,14 @@ module.exports = {
 
     // Invoice Operations
     generateProformaInvoicePdf,
-    getProformaInvoiceData
+    getProformaInvoiceData,
+
+    // Pathology Operations
+    fetchAndSavePathologyData: AppointmentPathology.fetchAndSavePathologyData,
+    getPathologyData: AppointmentPathology.getPathologyData,
+    hasPathologyData: AppointmentPathology.hasPathologyData,
+
+    // PDF Operations
+    generateMasterPDF: AppointmentMasterPDF.generateMasterPDF,
+    generateTPAPDF: AppointmentTPAPDF.generateTPAPDF
 };

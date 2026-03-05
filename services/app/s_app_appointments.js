@@ -46,16 +46,19 @@ async function listTechnicianAppointments({ userId, page = 1, limit = 10, search
         searchParams.push(like, like, like);
     }
 
+    // Use home_confirmed_at for BOTH; confirmed_date otherwise (no appointment_date fallback)
+    const confirmDateExpr = `CASE WHEN LOWER(a.visit_type) = 'both' THEN a.home_confirmed_at ELSE a.confirmed_date END`;
+
     if (todayOnly) {
         // Normalize to IST (+05:30) to match local app day boundaries
-        conditions.push(`DATE(CONVERT_TZ(COALESCE(a.confirmed_date, a.appointment_date), '+00:00', '+05:30')) = DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+05:30'))`);
+        conditions.push(`DATE(CONVERT_TZ(${confirmDateExpr}, '+00:00', '+05:30')) = DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+05:30'))`);
         // Exclude completed appointments from today's list
         conditions.push(`(a.medical_status NOT IN ('medical_completed', 'completed') OR a.medical_status IS NULL)`);
         conditions.push(`(a.home_medical_status NOT IN ('medical_completed', 'completed') OR a.home_medical_status IS NULL)`);
         conditions.push(`a.status NOT IN ('completed', 'medical_completed')`);
     } else if (upcomingOnly) {
-        conditions.push(`a.confirmed_date IS NOT NULL`);
-        conditions.push(`a.confirmed_date > CURDATE()`); // tomorrow onwards
+        conditions.push(`${confirmDateExpr} IS NOT NULL`);
+        conditions.push(`${confirmDateExpr} > CURDATE()`); // tomorrow onwards
         // Exclude completed/medical_completed from upcoming list
         conditions.push(`(a.medical_status NOT IN ('medical_completed', 'completed') OR a.medical_status IS NULL)`);
         conditions.push(`(a.home_medical_status NOT IN ('medical_completed', 'completed') OR a.home_medical_status IS NULL)`);
@@ -101,11 +104,16 @@ async function listTechnicianAppointments({ userId, page = 1, limit = 10, search
             a.visit_type,
             DATE_FORMAT(a.appointment_date, '%d-%m-%Y') AS appointment_date,
             a.appointment_time,
-            DATE_FORMAT(a.confirmed_date, '%d-%m-%Y') AS confirmed_date,
-            a.confirmed_time,
+            CASE
+                WHEN LOWER(a.visit_type) = 'both' THEN DATE_FORMAT(a.home_confirmed_at, '%d-%m-%Y')
+                ELSE DATE_FORMAT(a.confirmed_date, '%d-%m-%Y')
+            END AS confirmed_date,
+            CASE
+                WHEN LOWER(a.visit_type) = 'both' THEN TIME_FORMAT(a.home_confirmed_at, '%H:%i')
+                ELSE a.confirmed_time
+            END AS confirmed_time,
             CASE 
-                WHEN a.visit_type = 'home' THEN a.home_medical_status
-                WHEN a.visit_type = 'both' THEN a.home_medical_status
+                WHEN LOWER(a.visit_type) = 'both' THEN a.home_medical_status
                 ELSE a.medical_status
             END AS medical_status,
             a.home_medical_status,
@@ -199,11 +207,16 @@ async function getTechnicianAppointmentDetails({ userId, appointmentId }) {
             a.visit_type,
             a.appointment_date,
             a.appointment_time,
-            a.confirmed_date,
-            a.confirmed_time,
+            CASE
+                WHEN LOWER(a.visit_type) = 'both' THEN DATE(a.home_confirmed_at)
+                ELSE a.confirmed_date
+            END AS confirmed_date,
+            CASE
+                WHEN LOWER(a.visit_type) = 'both' THEN TIME(a.home_confirmed_at)
+                ELSE a.confirmed_time
+            END AS confirmed_time,
             CASE 
-                WHEN a.visit_type = 'home' THEN a.home_medical_status
-                WHEN a.visit_type = 'both' THEN a.home_medical_status
+                WHEN LOWER(a.visit_type) = 'both' THEN a.home_medical_status
                 ELSE a.medical_status
             END AS medical_status,
             a.home_medical_status,

@@ -11,6 +11,19 @@ class TestCategoriesService extends BaseService {
         super('test_categories');
     }
 
+    parseReportType(value) {
+        if (Array.isArray(value)) return value;
+        if (typeof value === 'string') {
+            try {
+                const parsed = JSON.parse(value);
+                return Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
+            } catch (e) {
+                return value ? [value] : [];
+            }
+        }
+        return value ? [value] : [];
+    }
+
     async createCategory(category, createdBy = null, connection = null) {
         let useConnection = connection;
         let shouldReleaseConnection = false;
@@ -29,12 +42,16 @@ class TestCategoriesService extends BaseService {
                     category_name, description, is_active, created_by, created_at, report_type
                 ) VALUES (?, ?, ?, ?, NOW(), ?)
             `;
+            const normalizedReportType = Array.isArray(category.report_type)
+                ? JSON.stringify(category.report_type)
+                : category.report_type || null;
+
             const [categoryResult] = await useConnection.execute(categorySql, [
                 category.category_name,
                 category.description || null,
                 category.is_active ?? 1,
                 createdBy,
-                category.report_type || null
+                normalizedReportType
             ]);
             const categoryId = categoryResult.insertId;
 
@@ -123,8 +140,11 @@ class TestCategoriesService extends BaseService {
             const values = [];
             for (const [key, value] of Object.entries(fieldsToUpdate)) {
                 if (value !== undefined && key !== 'client_id' && key !== 'insurer_id' && key !== 'rate' && key !== 'priority' && key !== 'approval_notes') {
+                    const normalizedValue = key === 'report_type'
+                        ? (Array.isArray(value) ? JSON.stringify(value) : value)
+                        : value;
                     fields.push(`${key} = ?`);
-                    values.push(value);
+                    values.push(normalizedValue);
                 }
             }
 
@@ -291,6 +311,7 @@ class TestCategoriesService extends BaseService {
 
             // Enrich results with test_ids and rates for each category
             for (const row of result.data) {
+                row.report_type = this.parseReportType(row.report_type);
                 // Get test mappings
                 const tests = await db.query(
                     'SELECT single_test_id FROM category_test_mapping WHERE category_test_id = ?',
@@ -335,6 +356,7 @@ class TestCategoriesService extends BaseService {
             }
 
             const category = rows[0];
+            category.report_type = this.parseReportType(category.report_type);
 
             const tests = await db.query(
                 'SELECT single_test_id FROM category_test_mapping WHERE category_test_id = ?',

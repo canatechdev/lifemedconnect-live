@@ -54,6 +54,7 @@ class CentersService extends BaseService {
         gps_latitude: data.gps_latitude || null,
         gps_longitude: data.gps_longitude || null,
         letterhead_path: data.letterhead_path || null,
+        footer_path: data.footer_path || null,
         is_active: data.is_active !== undefined ? data.is_active : 1,
         associate_doctor_1_id: data.associate_doctor_1_id || null,
         associate_doctor_2_id: data.associate_doctor_2_id || null,

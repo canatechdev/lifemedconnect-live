@@ -81,7 +81,7 @@ router.post(
         const result = await createWithApproval({
             entity_type: 'test_category',
             createFunction: async (data) => {
-                return await service.createCategory(data);
+                return await service.createCategory(data, req.user.id);
             },
             data: categoryData,
             user: req.user,

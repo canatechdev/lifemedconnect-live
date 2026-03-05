@@ -8,6 +8,20 @@ const { areValuesEqual, isEmptyLike } = require('./changeDetector');
 const { createFieldResolver, getTestNamesByIds, enrichNotesWithIdentifiers } = require('./displayEnricher');
 const { shouldIgnoreField } = require('../config/entityConfig');
 
+const parseSelectedItems = (val) => {
+    if (!val) return [];
+    if (Array.isArray(val)) return val;
+    if (typeof val === 'string') {
+        try {
+            const parsed = JSON.parse(val);
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (e) {
+            return [];
+        }
+    }
+    return [];
+};
+
 /**
  * Build display changes for approval modal
  * @param {Object} approval - Approval object
@@ -96,15 +110,60 @@ const buildDisplayChanges = async (approval) => {
     const resolver = createFieldResolver(approval.entity_type);
     
     // Computed fields that should not appear in change display
-    const COMPUTED_FIELDS = new Set(['total_amount', 'selected_items', 'test_ids', 'amount']);
+    // Keep amount visible for approvals (it's not a computed field for appointments)
+    // Note: selected_items is handled specially below, not skipped
+    const COMPUTED_FIELDS = new Set(['total_amount', 'test_ids']);
 
     for (const field of fields) {
         if (shouldIgnoreField(field)) continue;
         if (COMPUTED_FIELDS.has(field)) continue; // Skip computed fields
         
-        const oldVal = oldData[field];
-        const newVal = newData[field];
-        
+        let oldVal = oldData[field];
+        let newVal = newData[field];
+
+        // Special handling for selected_items: parse stringified JSON and always show enriched assignments
+        if (field === 'selected_items') {
+            const parsedOld = parseSelectedItems(oldVal);
+            const parsedNew = parseSelectedItems(newVal);
+
+            if (parsedOld.length === 0 && parsedNew.length === 0) continue;
+
+            // Collect all unique center IDs and technician IDs
+            const centerIds = [...new Set(parsedNew.map(item => item.assigned_center_id).filter(Boolean))];
+            const technicianIds = [...new Set(parsedNew.map(item => item.assigned_technician_id).filter(Boolean))];
+
+            const centerMap = {};
+            if (centerIds.length > 0) {
+                const placeholders = centerIds.map(() => '?').join(',');
+                const centers = await db.query(`SELECT id, center_name FROM diagnostic_centers WHERE id IN (${placeholders})`, centerIds);
+                centers.forEach(center => centerMap[center.id] = center.center_name);
+            }
+
+            const technicianMap = {};
+            if (technicianIds.length > 0) {
+                const placeholders = technicianIds.map(() => '?').join(',');
+                const technicians = await db.query(`SELECT id, full_name FROM technicians WHERE id IN (${placeholders})`, technicianIds);
+                technicians.forEach(tech => technicianMap[tech.id] = tech.full_name);
+            }
+
+            const describe = (items) => items.map(item => {
+                const parts = [`${item.name} (${item.type})`];
+                if (item.assigned_center_id) parts.push(`Center: ${centerMap[item.assigned_center_id] || item.assigned_center_id}`);
+                if (item.assigned_technician_id) parts.push(`Technician: ${technicianMap[item.assigned_technician_id] || item.assigned_technician_id}`);
+                if (item.visit_subtype) parts.push(`Visit: ${item.visit_subtype}`);
+                return parts.join(' | ');
+            });
+
+            changes.push({
+                field: 'Selected Tests & Assignments',
+                oldValue: parsedOld.length ? describe(parsedOld) : null,
+                newValue: describe(parsedNew),
+                type: 'selected_items'
+            });
+
+            continue;
+        }
+
         if (areValuesEqual(oldVal, newVal, field, { oldData, newData })) continue;
         if (JSON.stringify(oldVal) === JSON.stringify(newVal)) continue;
 

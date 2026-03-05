@@ -20,7 +20,8 @@ const { uploadLimiter } = require('../middleware/security');
 // File upload configuration
 const uploadFields = mixedUpload.fields([
   { name: 'dc_photos', maxCount: 10 },
-  { name: 'letterhead_path', maxCount: 1 }
+  { name: 'letterhead_path', maxCount: 1 },
+  { name: 'footer_path', maxCount: 1 }
 ]);
 
 async function extractFilePaths(files, existingPhotos = '[]') {
@@ -54,6 +55,12 @@ async function extractFilePaths(files, existingPhotos = '[]') {
   if (files.letterhead_path && Array.isArray(files.letterhead_path) && files.letterhead_path.length > 0) {
     const savedPath = await processSingleFile(files.letterhead_path[0], 'centers');
     result.letterhead_path = savedPath || null;
+  }
+
+  // Handle single footer as a single PATH string
+  if (files.footer_path && Array.isArray(files.footer_path) && files.footer_path.length > 0) {
+    const savedPath = await processSingleFile(files.footer_path[0], 'centers');
+    result.footer_path = savedPath || null;
   }
 
   return result;
@@ -137,13 +144,13 @@ router.put(
   validateRequest(centerSchemas.update),
   asyncHandler(async (req, res) => {
     // Log entire req.body to debug
-    logger.info('🔵 [CENTER-UPDATE] Full req.body contents:', {
+    logger.info(' [CENTER-UPDATE] Full req.body contents:', {
       bodyContents: req.body,
       bodyKeys: Object.keys(req.body),
       bodyEntries: Object.entries(req.body).map(([key, value]) => ({ key, value, type: typeof value }))
     });
     
-    logger.info('🔵 [CENTER-UPDATE] Starting update request', {
+    logger.info(' [CENTER-UPDATE] Starting update request', {
       centerId: req.params.id,
       userId: req.user.id,
       hasFiles: !!req.files,
@@ -175,7 +182,7 @@ router.put(
     
     const filePaths = await extractFilePaths(req.files, existingPhotos);
 
-    logger.info('🔵 [CENTER-UPDATE] File paths extracted', {
+    logger.info(' [CENTER-UPDATE] File paths extracted', {
       filePaths,
       existingPhotos,
       existingPhotosType: typeof req.body.existing_dc_photos,
@@ -188,7 +195,7 @@ router.put(
     }
 
     // File fields to check
-    const fileFields = ['letterhead_path', 'dc_photos'];
+    const fileFields = ['letterhead_path', 'footer_path', 'dc_photos'];
     
     // Build updates object, excluding file fields initially
     const updateData = {
@@ -198,7 +205,7 @@ router.put(
     
     // Add non-file fields from req.body
     // Exclude file fields, existing_dc_photos, and removal markers (they're not database columns)
-    const excludeFields = [...fileFields, 'existing_dc_photos', 'dc_photos_remove', 'letterhead_remove'];
+    const excludeFields = [...fileFields, 'existing_dc_photos', 'dc_photos_remove', 'letterhead_remove', 'footer_remove'];
     Object.keys(req.body).forEach(key => {
       if (!excludeFields.includes(key)) {
         updateData[key] = req.body[key];
@@ -217,7 +224,7 @@ router.put(
       const removalMarkerField = field.replace('_path', '') + '_remove';
       const hasRemovalMarker = req.body[removalMarkerField] === 'true' || req.body[removalMarkerField] === true;
       
-      logger.info(`🔵 [CENTER-UPDATE] Checking field: ${field}`, {
+      logger.info(` [CENTER-UPDATE] Checking field: ${field}`, {
         hasNewFile: !!hasNewFile,
         hasRemovalFlag,
         hasExistingData,

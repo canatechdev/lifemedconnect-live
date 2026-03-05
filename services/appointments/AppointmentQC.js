@@ -11,7 +11,7 @@ const { formatTimeAMPM, formatDateDDMMYYYY } = require('../approvals/utils/norma
  * List appointments pending QC
  * WHERE qc_status = 'pending' OR qc_status = 'in_process'
  */
-async function listQCPendingAppointments({ page = 1, limit = 10, search = '', sortBy = 'id', sortOrder = 'DESC' }) {
+async function listQCPendingAppointments({ page = 1, limit = 10, search = '', sortBy = 'id', sortOrder = 'DESC', customerCategory = '' }) {
     const allowedSortColumns = [
         'id', 'case_number', 'customer_first_name', 'customer_last_name',
         'confirmed_date', 'qc_status'
@@ -34,6 +34,11 @@ async function listQCPendingAppointments({ page = 1, limit = 10, search = '', so
         )`);
         const like = `%${search}%`;
         searchParams.push(like, like, like, like);
+    }
+
+    if (customerCategory) {
+        conditions.push(`a.customer_category = ?`);
+        searchParams.push(customerCategory);
     }
 
     const whereClause = `WHERE ${conditions.join(' AND ')}`;

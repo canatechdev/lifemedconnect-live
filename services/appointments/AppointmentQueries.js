@@ -56,7 +56,7 @@ function parseTestsData(tests) {
 /**
  * List appointments by diagnostic center
  */
-async function listAppointmentsByCenter({ page = 1, limit = 0, search = '', centerId, listType = 'all', sortBy = 'id',sortOrder = 'DESC' }) {
+async function listAppointmentsByCenter({ page = 1, limit = 0, search = '', centerId, listType = 'all', sortBy = 'id',sortOrder = 'DESC', customerCategory = '' }) {
      const allowedSortColumns = [
         'id', 'case_number', 'customer_first_name', 'customer_last_name',
         'confirmed_date', 'confirmed_time', 'medical_status'
@@ -96,6 +96,11 @@ async function listAppointmentsByCenter({ page = 1, limit = 0, search = '', cent
         )`);
         const like = `%${search}%`;
         searchParams.push(like, like, like,like);
+    }
+
+    if (customerCategory) {
+        conditions.push(`a.customer_category = ?`);
+        searchParams.push(customerCategory);
     }
 
     conditions.push(`a.is_deleted = 0`);
@@ -153,7 +158,8 @@ async function listAppointmentsByCenter({ page = 1, limit = 0, search = '', cent
         finalSql += ` LIMIT ${numericLimit} OFFSET ${offset}`;
     }
 
-    let rows = await db.query(dataSql, searchParams);
+    // Apply pagination (limit/offset) via finalSql
+   let rows = await db.query(finalSql, searchParams);
     rows = rows.map(row => {
         row.tests = parseTestsData(row.tests);
         return row;
@@ -173,7 +179,7 @@ async function listAppointmentsByCenter({ page = 1, limit = 0, search = '', cent
 /**
  * List appointments by technician
  */
-async function listAppointmentsByTechnician({ page = 1, limit = 0, search = '', technicianId }) {
+async function listAppointmentsByTechnician({ page = 1, limit = 0, search = '', technicianId, customerCategory = '' }) {
     const searchParams = [];
     const conditions = [`at.assigned_technician_id = ?`];
     searchParams.push(technicianId);
@@ -186,6 +192,11 @@ async function listAppointmentsByTechnician({ page = 1, limit = 0, search = '', 
         )`);
         const like = `%${search}%`;
         searchParams.push(like, like, like);
+    }
+
+    if (customerCategory) {
+        conditions.push(`a.customer_category = ?`);
+        searchParams.push(customerCategory);
     }
 
     conditions.push(`a.is_deleted = 0`);
@@ -310,7 +321,7 @@ async function listCenterPendingAppointments({ page = 1, limit = 0, search = '',
 /**
  * List pending (pushed back) appointments - Admin view
  */
-async function listPendingAppointments({ page = 1, limit = 0, search = '' }) {
+async function listPendingAppointments({ page = 1, limit = 0, search = '', customerCategory = '' }) {
     const searchParams = [];
     const conditions = ['a.pushed_back = 1', 'a.is_deleted = 0'];
 
@@ -322,6 +333,11 @@ async function listPendingAppointments({ page = 1, limit = 0, search = '' }) {
         )`);
         const like = `%${search}%`;
         searchParams.push(like, like, like);
+    }
+
+    if (customerCategory) {
+        conditions.push(`a.customer_category = ?`);
+        searchParams.push(customerCategory);
     }
 
     const whereClause = `WHERE ${conditions.join(' AND ')}`;
@@ -358,7 +374,7 @@ async function listPendingAppointments({ page = 1, limit = 0, search = '' }) {
 /**
  * List all confirmed appointments - Admin view
  */
-async function listAllConfirmedAppointments({ page = 1, limit = 0, search = '', listType = '',sortBy = 'confirmed_date',sortOrder = 'DESC' }) {
+async function listAllConfirmedAppointments({ page = 1, limit = 0, search = '', listType = '',sortBy = 'confirmed_date',sortOrder = 'DESC', customerCategory = '' }) {
 
      const allowedSortColumns = [
         'confirmed_date',
@@ -402,6 +418,11 @@ async function listAllConfirmedAppointments({ page = 1, limit = 0, search = '', 
         )`);
         const like = `%${search}%`;
         searchParams.push(like, like, like, like, like);
+    }
+
+    if (customerCategory) {
+        conditions.push(`a.customer_category = ?`);
+        searchParams.push(customerCategory);
     }
 
     const whereClause = `WHERE ${conditions.join(' AND ')}`;

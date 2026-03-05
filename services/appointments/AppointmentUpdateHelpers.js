@@ -73,6 +73,14 @@ async function verifyTestRates(selectedItems, clientId, insurerId, connection) {
  * Update basic appointment fields
  */
 async function updateAppointmentBasicFields(connection, id, row) {
+    // Enforce amount = 0 when cost type is Credit
+    if (row && Object.prototype.hasOwnProperty.call(row, 'cost_type')) {
+        const ct = row.cost_type;
+        if (ct && String(ct).toLowerCase() === 'credit') {
+            row.amount = 0;
+        }
+    }
+
     const updateFields = [];
     const updateValues = [];
 

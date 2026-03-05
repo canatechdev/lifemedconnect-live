@@ -202,6 +202,7 @@ router.get('/appointments', verifyToken, requirePermission('appointments.view'),
     const search = req.query.q || '';
     const sortBy = req.query.sortBy || 'id';
     const sortOrder = req.query.sortOrder || 'DESC';
+    const customerCategory = req.query.customerCategory || '';
 
     // If requester is a diagnostic center user, restrict to their appointments only
     const centerIdFromToken = req.user?.diagnostic_center_id || req.user?.center_id;
@@ -211,13 +212,14 @@ router.get('/appointments', verifyToken, requirePermission('appointments.view'),
             limit,
             search,
             centerId: centerIdFromToken,
-            listType: 'all'
+            listType: 'all',
+            customerCategory
         });
         return ApiResponse.paginated(res, result.data, result.pagination);
     }
 
     // Admin/Super Admin: return all
-    const result = await service.listAppointments({ page, limit, search, sortBy, sortOrder });
+    const result = await service.listAppointments({ page, limit, search, sortBy, sortOrder, customerCategory });
     return ApiResponse.paginated(res, result.data, result.pagination);
 }));
 
@@ -228,12 +230,14 @@ router.get('/appointments/admin/pending', verifyToken, requirePermission('appoin
     const search = req.query.q || '';
     const sortBy = req.query.sortBy || 'id';
     const sortOrder = req.query.sortOrder || 'DESC';
+    const customerCategory = req.query.customerCategory || '';
 
     // Use listPendingAppointments for pushed back appointments
     const result = await service.listPendingAppointments({ 
         page, 
         limit, 
-        search
+        search,
+        customerCategory
     });
     return ApiResponse.paginated(res, result.data, result.pagination);
 }));
@@ -245,8 +249,9 @@ router.get('/appointments/confirmed', verifyToken, requirePermission('appointmen
     const search = req.query.q || '';
     const sortBy = req.query.sortBy || 'confirmed_date';
     const sortOrder = req.query.sortOrder || 'DESC';
+    const customerCategory = req.query.customerCategory || '';
 
-    const result = await service.listAllConfirmedAppointments({ page, limit, search, sortBy, sortOrder });
+    const result = await service.listAllConfirmedAppointments({ page, limit, search, sortBy, sortOrder, customerCategory });
     return ApiResponse.paginated(res, result.data, result.pagination);
 }));
 
@@ -258,8 +263,9 @@ router.get('/appointments/report', verifyToken, requirePermission('appointments.
     const sortBy = req.query.sortBy || 'confirmed_date';
     const sortOrder = req.query.sortOrder || 'DESC';
     const type = 'completed';
+    const customerCategory = req.query.customerCategory || '';
 
-    const result = await service.listAllConfirmedAppointments({ page, limit, search, listType: type, sortBy, sortOrder });
+    const result = await service.listAllConfirmedAppointments({ page, limit, search, listType: type, sortBy, sortOrder, customerCategory });
     return ApiResponse.paginated(res, result.data, result.pagination);
 }));
 
@@ -271,8 +277,9 @@ router.get('/appointments/DiagnosticCenter', verifyToken, requirePermission('app
     const centerIdRaw = req.query.centerId;
     const centerId = centerIdRaw !== undefined ? parseInt(centerIdRaw) : undefined;
     const listType = req.query.listType || 'all';
+    const customerCategory = req.query.customerCategory || '';
 
-    const result = await service.listAppointmentsbyDiagnosticCenters({ page, limit, search, centerId, listType });
+    const result = await service.listAppointmentsbyDiagnosticCenters({ page, limit, search, centerId, listType, customerCategory });
     return ApiResponse.paginated(res, result.data, result.pagination);
 }));
 
@@ -282,8 +289,9 @@ router.get('/appointments/Technician', verifyToken, requirePermission('appointme
     const limit = parseInt(req.query.limit) || 0;
     const search = req.query.q || '';
     const technicianId = parseInt(req.query.technicianId);
+    const customerCategory = req.query.customerCategory || '';
 
-    const result = await service.listAppointmentsByTechnician({ page, limit, search, technicianId });
+    const result = await service.listAppointmentsByTechnician({ page, limit, search, technicianId, customerCategory });
     return ApiResponse.paginated(res, result.data, result.pagination);
 }));
 
@@ -295,8 +303,9 @@ router.get('/appointments/qc/pending', verifyToken, requirePermission('appointme
     const search = req.query.q || '';
     const sortBy = req.query.sortBy || 'id';
     const sortOrder = req.query.sortOrder || 'DESC';
+    const customerCategory = req.query.customerCategory || '';
 
-    const result = await service.listQcPendingAppointments({ page, limit, search, sortBy, sortOrder });
+    const result = await service.listQcPendingAppointments({ page, limit, search, sortBy, sortOrder, customerCategory });
     return ApiResponse.paginated(res, result.data, result.pagination);
 }));
 
@@ -370,6 +379,23 @@ router.put('/appointments/:id',
             }
         });
 
+        // Normalize selected_items if sent as string (e.g., from form-data)
+        if (typeof req.body.selected_items === 'string') {
+            try {
+                const parsed = JSON.parse(req.body.selected_items);
+                req.body.selected_items = Array.isArray(parsed) ? parsed : req.body.selected_items;
+            } catch (e) {
+                // leave as-is if parsing fails; validation will handle
+            }
+        }
+
+        logger.info('Appointment update payload (selected_items debug)', {
+            appointmentId: req.params.id,
+            selectedItemsType: typeof req.body.selected_items,
+            selectedItemsCount: Array.isArray(req.body.selected_items) ? req.body.selected_items.length : null,
+            selectedItemsPreview: Array.isArray(req.body.selected_items) ? req.body.selected_items.slice(0, 2) : req.body.selected_items
+        });
+
         req.body.updated_by = req.user.id;
 
         const result = await updateWithApproval({
@@ -379,7 +405,11 @@ router.put('/appointments/:id',
             new_data: req.body,
             created_by: req.user.id,
             role_id: req.user.role_id,
-            getFunction: service.getAppointment,
+            getFunction: async (id) => {
+                // Use getAppointmentWithTests to include selected_items in old_data
+                const appointment = await service.getAppointmentWithTests(id);
+                return appointment;
+            },
             updateFunction: service.updateAppointment,
             user: req.user
         });
@@ -401,9 +431,9 @@ router.delete('/appointments',
             action_type: 'delete',
             entity_ids: ids,
             ids: ids,
-            getFunction: ids.length > 1
-                ? service.getAppointmentsByIds(ids)
-                : service.getAppointment(ids),
+            getFunction: async () => ids.length > 1
+                ? await service.getAppointmentsByIds(ids)
+                : await service.getAppointment(ids[0]),
             deleteFunction: service.softDeleteAppointments
         });
 
@@ -412,14 +442,55 @@ router.delete('/appointments',
     })
 );
 
-// BULK UPDATE Appointments
+// Legacy alias for delete via POST (maintain permission check)
+router.post('/appointments/delete',
+    verifyToken,
+    requirePermission('appointments.delete'),
+    validateRequest(appointmentDeleteSchema),
+    asyncHandler(async (req, res) => {
+        const ids = req.body.ids;
+        const result = await deleteWithApproval({
+            entity_type: 'appointment',
+            action_type: 'delete',
+            entity_ids: ids,
+            ids: ids,
+            getFunction: async () => ids.length > 1
+                ? await service.getAppointmentsByIds(ids)
+                : await service.getAppointment(ids[0]),
+            deleteFunction: service.softDeleteAppointments
+        });
+
+        const response = formatApprovalResponse(result);
+        return ApiResponse.success(res, response, response.message);
+    })
+);
+
+// BULK UPDATE Appointments this applies chnages imediately without permission 
 router.patch('/appointments/bulk-update',
     verifyToken,
-    requirePermission('appointments.update'),
     validateRequest(appointmentBulkUpdateSchema),
     asyncHandler(async (req, res) => {
+        const userPerms = req.user.permissions || [];
+        const hasBulk = userPerms.includes('appointments.bulk_operations');
+        const hasAssign = userPerms.includes('appointments.assign_center');
+
+        // Must have either bulk_operations or assign_center to enter
+        if (!hasBulk && !hasAssign) {
+            return ApiResponse.error(res, 'Permission denied: appointments.bulk_operations or appointments.assign_center required', 403);
+        }
+
         const { ids, ...updates } = req.body;
         updates.updated_by = req.user.id;
+
+        // Cost/amount only if bulk permission
+        if ((updates.cost_type !== undefined || updates.amount !== undefined) && !hasBulk) {
+            return ApiResponse.error(res, 'Permission denied: appointments.bulk_operations required for cost updates', 403);
+        }
+
+        // Center/technician assignment requires assign_center
+        if ((updates.center_id !== undefined || updates.assigned_technician_id !== undefined) && !hasAssign) {
+            return ApiResponse.error(res, 'Permission denied: appointments.assign_center required for assignment changes', 403);
+        }
 
         const result = await service.bulkUpdateAppointments(ids, updates);
         return ApiResponse.success(res, { affectedRows: result }, 'Appointments updated successfully');
@@ -427,8 +498,27 @@ router.patch('/appointments/bulk-update',
 );
 
 // BULK UPDATE with Approval (UpdateIds)
-router.post('/appointments/UpdateIds', verifyToken, requirePermission('appointments.update'), validateRequest(appointmentBulkUpdateSchema), asyncHandler(async (req, res) => {
+router.post('/appointments/UpdateIds', verifyToken, validateRequest(appointmentBulkUpdateSchema), asyncHandler(async (req, res) => {
+    const userPerms = req.user.permissions || [];
+    const hasBulk = userPerms.includes('appointments.bulk_operations');
+    const hasAssign = userPerms.includes('appointments.assign_center');
+
+    // Must have either bulk_operations or assign_center to enter
+    if (!hasBulk && !hasAssign) {
+        return ApiResponse.error(res, 'Permission denied: appointments.bulk_operations or appointments.assign_center required', 403);
+    }
+
     const value = req.body;
+
+    // Cost/amount only if bulk permission
+    if ((value.cost_type !== undefined || value.amount !== undefined) && !hasBulk) {
+        return ApiResponse.error(res, 'Permission denied: appointments.bulk_operations required for cost updates', 403);
+    }
+
+    // Guard center/technician assignment behind assign_center permission
+    if ((value.center_id !== undefined || value.assigned_technician_id !== undefined) && !hasAssign) {
+        return ApiResponse.error(res, 'Permission denied: appointments.assign_center required for assignment changes', 403);
+    }
 
     const result = await updateWithApproval({
         entity_type: 'appointment',
@@ -495,6 +585,7 @@ router.get('/appointments/center/unconfirmed', verifyToken, requirePermission('a
     const limit = parseInt(req.query.limit) || 0;
     const search = req.query.q || '';
     const centerId = req.user.center_id || parseInt(req.query.centerId);
+    const customerCategory = req.query.customerCategory || '';
 
     if (!centerId) {
         return ApiResponse.error(res, 'Center ID is required', 400);
@@ -505,7 +596,8 @@ router.get('/appointments/center/unconfirmed', verifyToken, requirePermission('a
         limit,
         search,
         centerId,
-        listType: 'unconfirmed'
+        listType: 'unconfirmed',
+        customerCategory
     });
     return ApiResponse.paginated(res, result.data, result.pagination);
 }));
@@ -518,6 +610,7 @@ router.get('/appointments/center/confirmed', verifyToken, requirePermission('app
     const centerId = req.user.center_id || parseInt(req.query.centerId);
     const sortBy = req.query.sortBy || 'id';
     const sortOrder = req.query.sortOrder || 'DESC';
+    const customerCategory = req.query.customerCategory || '';
 
     if (!centerId) {
         return ApiResponse.error(res, 'Center ID is required', 400);
@@ -530,7 +623,8 @@ router.get('/appointments/center/confirmed', verifyToken, requirePermission('app
         centerId,
         listType: 'confirmed',
         sortBy,
-        sortOrder
+        sortOrder,
+        customerCategory
     });
     return ApiResponse.paginated(res, result.data, result.pagination);
 }));
@@ -540,22 +634,37 @@ router.get('/appointments/center/report', verifyToken, requirePermission('appoin
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 0;
     const search = req.query.q || '';
-    const centerId = req.user.center_id || parseInt(req.query.centerId);
     const sortBy = req.query.sortBy || 'id';
     const sortOrder = req.query.sortOrder || 'DESC';
+    const customerCategory = req.query.customerCategory || '';
 
-    if (!centerId) {
-        return ApiResponse.error(res, 'Center ID is required', 400);
+    const centerIdFromToken = req.user?.center_id || req.user?.diagnostic_center_id;
+    const centerIdFromQuery = req.query.centerId !== undefined ? parseInt(req.query.centerId) : undefined;
+    const centerId = centerIdFromToken || centerIdFromQuery;
+
+    if (centerId) {
+        const result = await service.listAppointmentsbyDiagnosticCenters({
+            page,
+            limit,
+            search,
+            centerId,
+            listType: 'completed',
+            sortBy,
+            sortOrder,
+            customerCategory
+        });
+        return ApiResponse.paginated(res, result.data, result.pagination);
     }
 
-    const result = await service.listAppointmentsbyDiagnosticCenters({
+    // Admin/Super Admin: allow without centerId, fetch all completed
+    const result = await service.listAllConfirmedAppointments({
         page,
         limit,
         search,
-        centerId,
         listType: 'completed',
         sortBy,
-        sortOrder
+        sortOrder,
+        customerCategory
     });
     return ApiResponse.paginated(res, result.data, result.pagination);
 }));
@@ -960,7 +1069,8 @@ router.get('/appointments/:id/proforma-invoice',
         const { pdfBuffer } = result;
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `attachment; filename="proforma-invoice-${appointmentId}.pdf"`);
-        return res.send(pdfBuffer);
+        res.setHeader('Content-Length', pdfBuffer.length);
+        return res.end(pdfBuffer);
     })
 );
 
@@ -1373,6 +1483,74 @@ router.get('/appointments/:id/report-counts',
         const appointmentId = parseInt(req.params.id);
         const counts = await service.getReportCounts(appointmentId);
         return ApiResponse.success(res, counts);
+    })
+);
+
+// ============================================
+// PATHOLOGY DATA ROUTES
+// ============================================
+
+// Fetch pathology data from external API and generate PDF
+router.post('/appointments/:id/pathology/fetch',
+    verifyToken,
+    requirePermission('appointments.upload_docs'),
+    asyncHandler(async (req, res) => {
+        const appointmentId = parseInt(req.params.id);
+        const result = await service.fetchAndSavePathologyData(appointmentId, req.user.id);
+        return ApiResponse.success(res, result);
+    })
+);
+
+// Get pathology data for appointment
+router.get('/appointments/:id/pathology',
+    verifyToken,
+    requirePermission('appointments.view'),
+    asyncHandler(async (req, res) => {
+        const appointmentId = parseInt(req.params.id);
+        const data = await service.getPathologyData(appointmentId);
+        
+        if (!data) {
+            return ApiResponse.error(res, 'No pathology data found for this appointment', 404);
+        }
+        
+        return ApiResponse.success(res, data);
+    })
+);
+
+// Check if pathology data exists
+router.get('/appointments/:id/pathology/exists',
+    verifyToken,
+    requirePermission('appointments.view'),
+    asyncHandler(async (req, res) => {
+        const appointmentId = parseInt(req.params.id);
+        const exists = await service.hasPathologyData(appointmentId);
+        return ApiResponse.success(res, { exists });
+    })
+);
+
+// ============================================
+// PDF GENERATION
+// ============================================
+
+// Generate TPA PDF for completed appointment (MTRF > Photos > MER > Patho > Cardio > Radio > Other)
+router.get('/appointments/:id/tpa-pdf',
+    verifyToken,
+    requirePermission('appointments.view'),
+    asyncHandler(async (req, res) => {
+        const appointmentId = parseInt(req.params.id);
+        const result = await service.generateTPAPDF(appointmentId);
+        return ApiResponse.success(res, result);
+    })
+);
+
+// Generate comprehensive master PDF for completed appointment
+router.get('/appointments/:id/master-pdf',
+    verifyToken,
+    requirePermission('appointments.view'),
+    asyncHandler(async (req, res) => {
+        const appointmentId = parseInt(req.params.id);
+        const result = await service.generateMasterPDF(appointmentId);
+        return ApiResponse.success(res, result);
     })
 );
 

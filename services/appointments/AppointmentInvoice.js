@@ -1,71 +1,28 @@
-const htmlToPdf = require('html-pdf-node');
-const Handlebars = require('handlebars');
 const moment = require('moment');
 const path = require('path');
 const fs = require('fs/promises');
 const db = require('../../lib/dbconnection');
 const logger = require('../../lib/logger');
-
-function formatCurrency(value) {
-    const num = parseFloat(value) || 0;
-    const formatted = new Intl.NumberFormat('en-IN', {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-    }).format(num);
-    return `INR ${formatted}`;
-}
-
-function formatDate(date) {
-    return date ? moment(date).format('DD/MM/YYYY') : '';
-}
-
-function safeText(value) {
-    return value == null ? '' : String(value).trim();
-}
-
-async function getLetterheadDataUrl(relativePath) {
-    if (!relativePath) return null;
-    try {
-        const baseDir = path.resolve(__dirname, '../../');
-        const absolutePath = path.isAbsolute(relativePath)
-            ? relativePath
-            : path.join(baseDir, relativePath);
-        const fileBuffer = await fs.readFile(absolutePath);
-
-        const ext = path.extname(absolutePath).toLowerCase();
-        const mimeTypes = {
-            '.png': 'image/png',
-            '.jpg': 'image/jpeg',
-            '.jpeg': 'image/jpeg',
-            '.webp': 'image/webp',
-            '.gif': 'image/gif',
-            '.bmp': 'image/bmp',
-            '.svg': 'image/svg+xml'
-        };
-        const mimeType = mimeTypes[ext] || 'application/octet-stream';
-        return `data:${mimeType};base64,${fileBuffer.toString('base64')}`;
-    } catch (error) {
-        logger.warn('Failed to load diagnostic center letterhead image', {
-            relativePath,
-            error: error.message
-        });
-        return null;
-    }
-}
+const {
+    formatCurrency,
+    formatDate,
+    safeText,
+    unwrapRows,
+    getLetterheadDataUrl,
+    buildPdfHtml,
+    generatePdfBuffer,
+    getStandardMargins,
+} = require('../../lib/pdfUtils');
 
 // Helper to unwrap mysql2/promise results
-function unwrapRows(result) {
-    return Array.isArray(result) && result.length === 2 && Array.isArray(result[0]) ? result[0] : result;
-}
-
-// Fetch data (same logic, cleaner)
 async function getProformaInvoiceData(appointmentId) {
     const appointmentResult = await db.query(
         `SELECT a.*, c.client_name, i.insurer_name,
                 dc1.center_name, dc1.address AS center_address, dc1.city AS center_city,
                 dc1.state AS center_state, dc1.pincode AS center_pincode,
                 dc1.contact_number AS center_contact, dc1.email AS center_email,
-                dc1.letterhead_path AS center_letterhead_path
+                dc1.letterhead_path AS center_letterhead_path,
+                dc1.footer_path AS center_footer_path
          FROM appointments a
          LEFT JOIN clients c ON c.id = a.client_id
          LEFT JOIN insurers i ON i.id = a.insurer_id
@@ -113,7 +70,7 @@ async function getProformaInvoiceData(appointmentId) {
     };
 }
 
-// Generate PDF using html-pdf-node
+// Generate PDF using standardized template system
 async function generateProformaInvoicePdfBuffer(data) {
     const { appointment, items, totals } = data;
 
@@ -137,13 +94,16 @@ async function generateProformaInvoicePdfBuffer(data) {
 
     const patientName = `${safeText(appointment.customer_first_name || '')} ${safeText(appointment.customer_last_name || '')}`.trim() || safeText(appointment.customer_name) || '-';
 
-    const letterheadDataUrl = await getLetterheadDataUrl(appointment.center_letterhead_path);
+    // Convert header/footer to data URLs
+    const baseDir = path.resolve(__dirname, '../../');
+    const headerDataUrl = await getLetterheadDataUrl(appointment.center_letterhead_path, baseDir, logger);
+    const footerDataUrl = await getLetterheadDataUrl(appointment.center_footer_path, baseDir, logger);
 
-    const viewModel = {
+    // Generate invoice content HTML
+    const invoiceContent = generateInvoiceContent({
         diagnosticCenterName: safeText(appointment.center_name) || 'Diagnostic Center',
         providerAddress: safeText(providerAddress),
         providerContact: safeText(providerContact),
-
         caseNo: safeText(appointment.case_number),
         applicationNo: safeText(appointment.application_number),
         date: safeText(appointmentDate),
@@ -155,10 +115,8 @@ async function generateProformaInvoicePdfBuffer(data) {
         patientName,
         patientMobile: safeText(appointment.customer_mobile),
         visitType: safeText(appointment.visit_type),
-        letterheadDataUrl,
         items: (items || []).map((it, idx) => ({
             sr: idx + 1,
-
             description: safeText(it.name),
             subDescription: safeText(it.description),
             type: safeText(it.type).toUpperCase(),
@@ -166,203 +124,295 @@ async function generateProformaInvoicePdfBuffer(data) {
         })),
         total: formatCurrency(totals.totalAmount),
         generatedOn,
-    };
+    });
 
-    const htmlTemplate = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <style>
-    @page { size: A4; margin: 12mm 16mm 16mm 16mm; }
-    body { font-family: Arial, Helvetica, sans-serif; font-size: 12px; color: #000; padding-top: 4px; }
+    // Build HTML (content only)
+    const html = buildPdfHtml({
+        content: invoiceContent,
+        title: `Proforma Invoice - ${appointment.case_number || appointment.id}`,
+        customStyles: getInvoiceStyles()
+    });
 
-    .title { text-align: center; font-size: 20px; font-weight: 700; margin: 0 0 10px 0; }
-    .muted { color: #444; }
-    .subdesc { font-size: 10px; color: #444; margin-top: 2px; }
+    // Generate PDF with Puppeteer native header/footer templates
+    const headerHeightMm = 38;
+    const footerHeightMm = 24;
 
-    table { border-collapse: collapse; width: 100%; table-layout: fixed; }
-    th, td { border: 1px solid #000; padding: 6px 8px; vertical-align: top; word-break: break-word; }
-    th { background: #f2f2f2; font-weight: 700; }
+    const pdfBuffer = await generatePdfBuffer({
+        html,
+        headerDataUrl,
+        footerDataUrl,
+        headerHeightMm,
+        footerHeightMm,
+        margin: getStandardMargins(headerHeightMm, footerHeightMm)
+    });
 
-    .grid td { height: 18px; }
-    .label { width: 35%; font-weight: 700; }
-    .value { width: 65%; }
-
-    .right { text-align: right; }
-    .center { text-align: center; }
-
-    .section { margin-top: 10px; }
-    .letterhead { margin: 4px 0 14px; }
-    .letterhead img { width: 100%; height: 120px; object-fit: cover; display: block;  }
-
-    .items thead { display: table-header-group; }
-    .items tfoot { display: table-footer-group; }
-    .items tr { page-break-inside: avoid; }
-
-    .totals { width: 45%; margin-left: auto; }
-    .footer { margin-top: 10px; font-size: 10px; text-align: center; }
-
-    @page {
-  size: A4;
-  margin: 16mm;
-  margin-bottom: 30mm; /* reserve space for footer */
+    logger.info(`Invoice PDF generated, size: ${pdfBuffer.length} bytes`);
+    return pdfBuffer;
 }
 
-.footer {
-  position: fixed;
-  bottom: 10mm;
-  left: 16mm;
-  right: 16mm;
-  font-size: 10px;
-  text-align: center;
+/**
+ * Generate invoice content HTML
+ */
+function generateInvoiceContent(data) {
+    const itemsHtml = data.items.map(item => `
+        <tr>
+            <td class="text-center">${item.sr}</td>
+            <td>
+                <div>${item.description}</div>
+                ${item.subDescription ? `<div class="text-sm text-gray-600">${item.subDescription}</div>` : ''}
+            </td>
+            <td class="text-center">${item.type}</td>
+            <td class="text-right">${item.rate}</td>
+        </tr>
+    `).join('');
+
+    return `
+        <div class="invoice-title">PROFORMA INVOICE</div>
+
+        <table class="invoice-grid">
+            <colgroup>
+                <col style="width: 60%" />
+                <col style="width: 40%" />
+            </colgroup>
+            <tr>
+                <th>Assigned Diagnostic Center</th>
+                <th>Details</th>
+            </tr>
+            <tr>
+                <td>
+                    <div><b>${data.diagnosticCenterName}</b></div>
+                    <div class="text-muted">${data.providerAddress}</div>
+                    <div class="text-muted">${data.providerContact}</div>
+                </td>
+                <td>
+                    <table class="inner-grid">
+                        <tr><td class="label">Case No</td><td class="value">${data.caseNo}</td></tr>
+                        <tr><td class="label">Application No</td><td class="value">${data.applicationNo}</td></tr>
+                        <tr><td class="label">Date</td><td class="value">${data.date}</td></tr>
+                        <tr><td class="label">Time</td><td class="value">${data.time}</td></tr>
+                    </table>
+                </td>
+            </tr>
+        </table>
+
+        <div class="section-spacer"></div>
+
+        <table class="invoice-grid">
+            <colgroup>
+                <col style="width: 50%" />
+                <col style="width: 50%" />
+            </colgroup>
+            <tr>
+                <th>Client / TPA</th>
+                <th>Patient / Appointment</th>
+            </tr>
+            <tr>
+                <td>
+                    <table class="inner-grid">
+                        <tr><td class="label">Client</td><td class="value">${data.clientName}</td></tr>
+                        <tr><td class="label">TPA</td><td class="value">${data.tpaName}</td></tr>
+                        <tr><td class="label">Cost Type</td><td class="value">${data.costType}</td></tr>
+                        ${data.costAmount ? `<tr><td class="label">Cost Amount</td><td class="value">${data.costAmount}</td></tr>` : ''}
+                    </table>
+                </td>
+                <td>
+                    <table class="inner-grid">
+                        <tr><td class="label">Name</td><td class="value">${data.patientName}</td></tr>
+                        <tr><td class="label">Mobile</td><td class="value">${data.patientMobile}</td></tr>
+                        <tr><td class="label">Visit Type</td><td class="value">${data.visitType}</td></tr>
+                        <tr><td class="label">Date</td><td class="value">${data.date}</td></tr>
+                        <tr><td class="label">Time</td><td class="value">${data.time}</td></tr>
+                    </table>
+                </td>
+            </tr>
+        </table>
+
+        <div class="section-spacer"></div>
+
+        <table class="items-table">
+            <colgroup>
+                <col style="width: 8%" />
+                <col style="width: 60%" />
+                <col style="width: 12%" />
+                <col style="width: 20%" />
+            </colgroup>
+            <thead>
+                <tr>
+                    <th class="text-center">#</th>
+                    <th>Description</th>
+                    <th class="text-center">Type</th>
+                    <th class="text-right">Rate</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${itemsHtml}
+            </tbody>
+        </table>
+
+        <div class="section-spacer"></div>
+
+        <table class="totals-table">
+            <tr><th colspan="2">Summary</th></tr>
+            <tr><td class="label"><b>Total</b></td><td class="text-right"><b>${data.total}</b></td></tr>
+        </table>
+
+        <div class="invoice-note">
+            <p><strong>Note:</strong> This is a proforma invoice for estimation purposes. Final bill may vary upon confirmation.</p>
+            <p class="text-sm text-gray-600 mt-1">Generated on: ${data.generatedOn}</p>
+        </div>
+    `;
 }
 
-  </style>
-</head>
-<body>
-
-  {{#if letterheadDataUrl}}
-  <div class="letterhead">
-    <img src="{{letterheadDataUrl}}" alt="Diagnostic Center Letterhead" />
-  </div>
-  {{/if}}
-
-  <div class="title">PROFORMA INVOICE</div>
-
-  <table class="grid">
-    <colgroup>
-      <col style="width: 60%" />
-      <col style="width: 40%" />
-    </colgroup>
-    <tr>
-      <th>Assigned Diagnostic Center</th>
-      <th>Details</th>
-    </tr>
-    <tr>
-      <td>
-        <div><b>{{diagnosticCenterName}}</b></div>
-        <div class="muted">{{providerAddress}}</div>
-        <div class="muted">{{providerContact}}</div>
-      </td>
-      <td>
-        <table class="grid">
-          <tr><td class="label">Case No</td><td class="value">{{caseNo}}</td></tr>
-          <tr><td class="label">Application No</td><td class="value">{{applicationNo}}</td></tr>
-          <tr><td class="label">Date</td><td class="value">{{date}}</td></tr>
-          <tr><td class="label">Time</td><td class="value">{{time}}</td></tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-
-  <div class="section"></div>
-
-  <table class="grid">
-    <colgroup>
-      <col style="width: 50%" />
-      <col style="width: 50%" />
-    </colgroup>
-    <tr>
-      <th>Client / TPA</th>
-      <th>Patient / Appointment</th>
-    </tr>
-    <tr>
-      <td>
-        <table class="grid">
-          <tr><td class="label">Client</td><td class="value">{{clientName}}</td></tr>
-          <tr><td class="label">TPA</td><td class="value">{{tpaName}}</td></tr>
-          <tr><td class="label">Cost Type</td><td class="value">{{costType}}</td></tr>
-          {{#if costAmount}}
-          <tr><td class="label">Cost Amount</td><td class="value">{{costAmount}}</td></tr>
-          {{/if}}
-        </table>
-      </td>
-      <td>
-        <table class="grid">
-          <tr><td class="label">Name</td><td class="value">{{patientName}}</td></tr>
-          <tr><td class="label">Mobile</td><td class="value">{{patientMobile}}</td></tr>
-          <tr><td class="label">Visit Type</td><td class="value">{{visitType}}</td></tr>
-          <tr><td class="label">Date</td><td class="value">{{date}}</td></tr>
-          <tr><td class="label">Time</td><td class="value">{{time}}</td></tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-
-  <div class="section"></div>
-
-  <table class="items">
-    <colgroup>
-      <col style="width: 6%" />
-      <col style="width: 62%" />
-      <col style="width: 12%" />
-      <col style="width: 20%" />
-    </colgroup>
-    <thead>
-      <tr>
-        <th class="center">#</th>
-        <th>Description</th>
-        <th class="center">Type</th>
-        <th class="right">Rate</th>
-      </tr>
-    </thead>
-    <tbody>
-      {{#each items}}
-      <tr>
-        <td class="center">{{sr}}</td>
-        <td>
-          <div>{{description}}</div>
-          {{#if subDescription}}
-          <div class="subdesc">{{subDescription}}</div>
-          {{/if}}
-        </td>
-        <td class="center">{{type}}</td>
-        <td class="right">{{rate}}</td>
-      </tr>
-      {{/each}}
-    </tbody>
-  </table>
-
-  <div class="section"></div>
-
-  <table class="totals grid">
-    <tr><th colspan="2">Summary</th></tr>
-    <tr><td class="label"><b>Total</b></td><td class="right"><b>{{total}}</b></td></tr>
-  </table>
-
-  <div class="footer">
-  <div>Note: This is a proforma invoice for estimation purposes. Final bill may vary upon confirmation.</div>
-  <div class="muted">Generated on: {{generatedOn}}</div>
-</div>
-
-
-</body>
-</html>`;
-
-    const compiled = Handlebars.compile(htmlTemplate, { noEscape: true });
-    const html = compiled(viewModel);
-
-    const file = { content: html };
-    const options = {
-        format: 'A4',
-        printBackground: true,
-        margin: {
-            top: '16mm',
-            right: '16mm',
-            bottom: '16mm',
-            left: '16mm',
-        },
-    };
-
-    return htmlToPdf.generatePdf(file, options);
+/**
+ * Get invoice-specific CSS styles
+ */
+function getInvoiceStyles() {
+    return `
+        .invoice-title {
+            text-align: center;
+            font-size: 20pt;
+            font-weight: 700;
+            margin: 0 0 16pt 0;
+            color: #000;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            border-bottom: 2pt solid #000;
+            padding-bottom: 8pt;
+        }
+        
+        .text-center { text-align: center; }
+        .text-right { text-align: right; }
+        .text-muted { color: #666; font-size: 9pt; }
+        .text-sm { font-size: 8pt; }
+        .text-gray-600 { color: #666; }
+        
+        .section-spacer {
+            margin-top: 12pt;
+        }
+        
+        .invoice-grid {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+            border: 1pt solid #000;
+        }
+        
+        .invoice-grid th {
+            background: #f8f8f8;
+            padding: 8pt 10pt;
+            text-align: left;
+            font-size: 10pt;
+            font-weight: 700;
+            border: 1pt solid #000;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .invoice-grid td {
+            padding: 8pt 10pt;
+            border: 1pt solid #000;
+            vertical-align: top;
+            font-size: 10pt;
+        }
+        
+        .inner-grid {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .inner-grid td {
+            border: none;
+            padding: 3pt 0;
+            font-size: 9pt;
+        }
+        
+        .inner-grid .label {
+            width: 40%;
+            font-weight: 600;
+            color: #000;
+        }
+        
+        .inner-grid .value {
+            width: 60%;
+            font-weight: 500;
+        }
+        
+        .items-table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+            border: 1pt solid #000;
+        }
+        
+        .items-table th {
+            background: #f8f8f8;
+            padding: 6pt 8pt;
+            text-align: left;
+            font-size: 9pt;
+            font-weight: 700;
+            border: 1pt solid #000;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .items-table td {
+            padding: 5pt 6pt;
+            font-size: 9pt;
+            border-bottom: 0.5pt solid #e2e8f0;
+            vertical-align: top;
+        }
+        
+        .items-table tbody tr:nth-child(even) {
+            background: #f8fafc;
+        }
+        
+        .totals-table {
+            width: 45%;
+            margin-left: auto;
+            border-collapse: collapse;
+        }
+        
+        .totals-table th {
+            background: #f1f5f9;
+            padding: 6pt 8pt;
+            text-align: left;
+            font-size: 9pt;
+            font-weight: 700;
+            border: 1pt solid #cbd5e1;
+        }
+        
+        .totals-table td {
+            padding: 6pt 8pt;
+            border: 1pt solid #cbd5e1;
+            font-size: 9pt;
+        }
+        
+        .invoice-note {
+            margin-top: 12pt;
+            padding: 8pt 10pt;
+            background: #fefce8;
+            border-left: 3pt solid #eab308;
+            border-radius: 3pt;
+            font-size: 8pt;
+        }
+        
+        .invoice-note strong {
+            color: #854d0e;
+        }
+    `;
 }
 
 async function generateProformaInvoicePdf(appointmentId) {
-    const data = await getProformaInvoiceData(appointmentId);
-    if (!data) return null;
+    try {
+        const data = await getProformaInvoiceData(appointmentId);
+        if (!data) return null;
 
-    const pdfBuffer = await generateProformaInvoicePdfBuffer(data);
-    return { pdfBuffer, invoiceData: data };
+        const pdfBuffer = await generateProformaInvoicePdfBuffer(data);
+        return { pdfBuffer, invoiceData: data };
+    } catch (error) {
+        logger.error('Error generating proforma invoice PDF:', error);
+        throw error;
+    }
 }
 
 module.exports = {
