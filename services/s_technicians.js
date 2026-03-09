@@ -1,23 +1,33 @@
 const db = require('../lib/dbconnection');
+const { generateCustomCode } = require('../lib/generateCode');
 
 async function createTechnician(row) {
+    // Generate technician_code if missing (year/month/sequence)
+    if (!row.technician_code || String(row.technician_code).trim() === '') {
+        row.technician_code = await generateCustomCode({
+            prefix: 'TECH',
+            table: 'technicians',
+            column: 'technician_code'
+        });
+    }
+
     const sql = `INSERT INTO technicians (user_id, center_id, technician_code, technician_type, rate_per_appointment, profile_pic, full_name, mobile, email, home_gps_latitude, home_gps_longitude, home_address, qualification, experience_years, is_active ,created_at, updated_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`;
     const params = [
-        row.user_id,
+        row.user_id ?? null,
         row.center_id,
         row.technician_code,
         row.technician_type || 'In-House',
-        row.rate_per_appointment || 0.00,
+        row.rate_per_appointment ?? 0.00,
         row.profile_pic || null,
         row.full_name,
         row.mobile,
         row.email || null,
-        row.home_gps_latitude || null,
-        row.home_gps_longitude || null,
+        row.home_gps_latitude ?? null,
+        row.home_gps_longitude ?? null,
         row.home_address || null,
         row.qualification || null,
-        row.experience_years || null,
+        row.experience_years ?? null,
         row.is_active ?? 1
     ];
     const result = await db.query(sql, params);

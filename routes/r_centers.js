@@ -24,7 +24,15 @@ const uploadFields = mixedUpload.fields([
   { name: 'footer_path', maxCount: 1 }
 ]);
 
-async function extractFilePaths(files, existingPhotos = '[]') {
+// Helper: Look up center_code for file organization
+async function getCenterCode(centerId) {
+    try {
+        const rows = await db.query('SELECT center_code FROM diagnostic_centers WHERE id = ?', [centerId]);
+        return rows?.[0]?.center_code || '';
+    } catch { return ''; }
+}
+
+async function extractFilePaths(files, existingPhotos = '[]', centerCode = '') {
   if (!files) {
     return { dc_photos: existingPhotos };
   }
@@ -34,7 +42,7 @@ async function extractFilePaths(files, existingPhotos = '[]') {
   // Handle dc_photos as an array of stored PATHS (JSON string), matching legacy behavior
   if (files.dc_photos && Array.isArray(files.dc_photos) && files.dc_photos.length > 0) {
     // New uploaded files -> store their relative paths
-    const newPaths = await processMultipleFiles(files.dc_photos, 'centers');
+    const newPaths = await processMultipleFiles(files.dc_photos, 'centers', centerCode);
 
     // Merge with existing paths (JSON string of paths)
     let existing = [];
@@ -53,13 +61,13 @@ async function extractFilePaths(files, existingPhotos = '[]') {
 
   // Handle single letterhead as a single PATH string
   if (files.letterhead_path && Array.isArray(files.letterhead_path) && files.letterhead_path.length > 0) {
-    const savedPath = await processSingleFile(files.letterhead_path[0], 'centers');
+    const savedPath = await processSingleFile(files.letterhead_path[0], 'centers', centerCode);
     result.letterhead_path = savedPath || null;
   }
 
   // Handle single footer as a single PATH string
   if (files.footer_path && Array.isArray(files.footer_path) && files.footer_path.length > 0) {
-    const savedPath = await processSingleFile(files.footer_path[0], 'centers');
+    const savedPath = await processSingleFile(files.footer_path[0], 'centers', centerCode);
     result.footer_path = savedPath || null;
   }
 
@@ -97,7 +105,7 @@ router.post(
   uploadFields,
   validateRequest(centerSchemas.create),
   asyncHandler(async (req, res) => {
-    const filePaths = await extractFilePaths(req.files);
+    const filePaths = await extractFilePaths(req.files, '[]', req.body.center_code || '');
     const isActive = req.body.is_active === 'true' || req.body.is_active === true ? 1 : 0;
 
     const centerData = {
@@ -180,7 +188,8 @@ router.put(
       existingPhotos = JSON.stringify(existingPhotos);
     }
     
-    const filePaths = await extractFilePaths(req.files, existingPhotos);
+    const centerCode = await getCenterCode(req.params.id);
+    const filePaths = await extractFilePaths(req.files, existingPhotos, centerCode);
 
     logger.info(' [CENTER-UPDATE] File paths extracted', {
       filePaths,

@@ -22,6 +22,9 @@ class InsurersService extends BaseService {
                 row.insurer_code = await generateCustomCode({ prefix: 'INS', table: 'insurers', column: 'insurer_code' });
             }
 
+            // Ensure short_code is not empty (unique index forbids '')
+            const shortCode = (row.short_code || '').trim() || row.insurer_code;
+
             const sql = `
                 INSERT INTO insurers (
                     insurer_code, insurer_name, short_code, insurer_type, contact_number, email, 
@@ -32,7 +35,7 @@ class InsurersService extends BaseService {
             const params = [
                 row.insurer_code,
                 row.insurer_name,
-                row.short_code,
+                shortCode,
                 row.insurer_type || 'Life',
                 row.contact_number || null,
                 row.email || null,

@@ -5,6 +5,7 @@ const { requirePermission } = require('../lib/permissions');
 const service = require('../services/s_doctor');
 const { mixedUpload } = require('../lib/multer');
 const { processUploadFields } = require('../lib/fileUpload');
+const db = require('../lib/dbconnection');
 const { asyncHandler } = require('../middleware/errorHandler');
 const validateRequest = require('../middleware/validateRequest');
 const ApiResponse = require('../lib/response');
@@ -32,11 +33,19 @@ const uploadFields = mixedUpload.fields([
 /* -------------------------------------------------------
  *  Utility - Extract file paths from uploaded files with compression
  * ----------------------------------------------------- */
-async function extractFilePaths(files, existingCertificates = '[]') {
+// Helper: Look up doctor_code for file organization
+async function getDoctorCode(doctorId) {
+    try {
+        const rows = await db.query('SELECT doctor_code FROM doctors WHERE id = ?', [doctorId]);
+        return rows?.[0]?.doctor_code || '';
+    } catch { return ''; }
+}
+
+async function extractFilePaths(files, existingCertificates = '[]', doctorCode = '') {
   if (!files) return {};
 
   // Process all uploaded files with compression
-  const processedFiles = await processUploadFields(files, 'doctors');
+  const processedFiles = await processUploadFields(files, 'doctors', doctorCode);
 
   // Handle existing educational certificates
   let existing = [];
@@ -108,7 +117,7 @@ router.post(
   asyncHandler(async (req, res) => {
     logger.info('Creating doctor', { userId: req.user.id, hasFiles: !!req.files });
     
-    const filePaths = await extractFilePaths(req.files);
+    const filePaths = await extractFilePaths(req.files, '[]', req.body.doctor_code || '');
     const doctorData = {
       ...req.body,
       ...filePaths,
@@ -155,7 +164,8 @@ router.put(
     });
 
     const existingCertificates = req.body.existing_educational_certificates || '[]';
-    const filePaths = await extractFilePaths(req.files, existingCertificates);
+    const doctorCode = await getDoctorCode(req.params.id);
+    const filePaths = await extractFilePaths(req.files, existingCertificates, doctorCode);
 
     // File fields to check
     const fileFields = ['aadhar_doc_path', 'pan_doc_path', 'profile_photo_path', 'educational_certificates'];

@@ -19,9 +19,17 @@ const service = require('../services/s_clients');
 //  NEW: Import security middleware
 const { uploadLimiter } = require('../middleware/security');
 
-async function processInvoiceFile(file) {
+async function processInvoiceFile(file, clientCode = '') {
   if (!file) return null;
-  return await processSingleFile(file, 'clients');
+  return await processSingleFile(file, 'clients', clientCode);
+}
+
+// Helper: Look up client_code for file organization
+async function getClientCode(clientId) {
+    try {
+        const rows = await db.query('SELECT client_code FROM clients WHERE id = ?', [clientId]);
+        return rows?.[0]?.client_code || '';
+    } catch { return ''; }
 }
 
 const uploadSingle = mixedUpload.single('invoice_format_upload');
@@ -64,7 +72,7 @@ router.post(
       bodyKeys: Object.keys(req.body)
     });
 
-    const invoicePath = await processInvoiceFile(req.file);
+    const invoicePath = await processInvoiceFile(req.file, req.body.client_code || '');
 
     const clientData = {
       ...req.body,
@@ -118,7 +126,8 @@ router.put(
     });
 
     delete req.body.client_code; // immutable
-    const invoicePath = await processInvoiceFile(req.file);
+    const clientCode = await getClientCode(req.params.id);
+    const invoicePath = await processInvoiceFile(req.file, clientCode);
 
     const updateData = {
       ...req.body,

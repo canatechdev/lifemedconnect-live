@@ -17,6 +17,7 @@ const AppointmentInvoice = require('./AppointmentInvoice');
 const AppointmentPathology = require('./AppointmentPathology');
 const AppointmentMasterPDF = require('./AppointmentMasterPDF');
 const AppointmentTPAPDF = require('./AppointmentComprehensivePDF');
+const AppointmentEmail = require('./AppointmentEmail');
 
 // Export all CRUD operations
 const {
@@ -203,5 +204,8 @@ module.exports = {
 
     // PDF Operations
     generateMasterPDF: AppointmentMasterPDF.generateMasterPDF,
-    generateTPAPDF: AppointmentTPAPDF.generateTPAPDF
+    generateTPAPDF: AppointmentTPAPDF.generateTPAPDF,
+
+    // Email Operations
+    sendAppointmentEmailToClient: AppointmentEmail.sendAppointmentEmailToClient
 };

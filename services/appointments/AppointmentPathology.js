@@ -9,6 +9,7 @@ const axios = require('axios');
 const path = require('path');
 const fs = require('fs').promises;
 const { parseApiDate, isAbnormal, getLetterheadDataUrl, safeText, unwrapRows, buildPdfHtml, generatePdfBuffer, getStandardMargins } = require('../../lib/pdfUtils');
+const { sanitizeFolderName } = require('../../lib/fileUpload');
 
 /**
  * Generate pathology report content HTML (without header/footer wrapper)
@@ -376,8 +377,11 @@ async function fetchAndSavePathologyData(appointmentId, userId) {
             customStyles: getPathologyStyles()
         });
         
-        // Create uploads directory if not exists
-        const uploadsDir = path.join(__dirname, '../../uploads/pathology');
+        // Create uploads directory if not exists (organized by case_number)
+        const safeCaseFolder = sanitizeFolderName(caseNumber);
+        const uploadsDir = safeCaseFolder
+            ? path.join(__dirname, '../../uploads/pathology', safeCaseFolder)
+            : path.join(__dirname, '../../uploads/pathology');
         await fs.mkdir(uploadsDir, { recursive: true });
         
         // Generate PDF filename
@@ -402,7 +406,9 @@ async function fetchAndSavePathologyData(appointmentId, userId) {
         logger.info('PDF generated successfully', { pdfPath });
         
         // Save to database (upsert)
-        const relativePdfPath = `uploads/pathology/${pdfFilename}`;
+        const relativePdfPath = safeCaseFolder
+            ? `uploads/pathology/${safeCaseFolder}/${pdfFilename}`
+            : `uploads/pathology/${pdfFilename}`;
         
         // Check if record exists
         const [existing] = await connection.query(

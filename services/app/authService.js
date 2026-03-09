@@ -1,11 +1,29 @@
 const db = require('../../lib/dbconnection');
 const logger = require('../../lib/logger');
-const nodemailer = require('nodemailer');
+const bcrypt = require('bcryptjs');
 const { generateToken, comparePassword } = require('../../lib/auth');
 const userService = require('../s_user');
+const emailService = require('../../lib/emailService');
 
 const TECHNICIAN_ROLE_ID = 4; // current technician role
-const OTP_EXPIRY_MINUTES = 10;
+
+// Get OTP expiry from ENV or default to 10 minutes
+function getOtpExpiryMinutes() {
+    return Number(process.env.OTP_EXPIRY_MINUTES) || 10;
+}
+
+// Mask email address for security (show last 4-5 chars before @)
+function maskEmail(email) {
+    if (!email) return '';
+    const [localPart, domain] = email.split('@');
+    if (!domain) return email;
+    
+    const visibleChars = Math.min(5, Math.max(4, localPart.length - 2));
+    const maskedPart = '*'.repeat(Math.max(0, localPart.length - visibleChars));
+    const visiblePart = localPart.slice(-visibleChars);
+    
+    return `${maskedPart}${visiblePart}@${domain}`;
+}
 
 function mapUserResponse(user) {
     const baseUrl = global.BASE_URL || '';
@@ -26,8 +44,19 @@ function mapUserResponse(user) {
 
 
 function isOtpEmailEnabled() {
-    const flag = (process.env.OTP_EMAIL_ENABLED ?? 'true').toString().toLowerCase();
+    const flag = (process.env.EMAIL_ENABLED ?? 'true').toString().toLowerCase();
     return flag === 'true' || flag === '1';
+}
+
+// Hash OTP for secure storage
+async function hashOtp(otp) {
+    const saltRounds = Number(process.env.BCRYPT_ROUNDS) || 10;
+    return await bcrypt.hash(otp, saltRounds);
+}
+
+// Verify OTP against hash
+async function verifyOtp(otp, hash) {
+    return await bcrypt.compare(otp, hash);
 }
 
 
@@ -90,75 +119,60 @@ async function changePassword({ userId, oldPassword, newPassword }) {
 }
 
 // OTP helpers
-async function createOtpRecord(userId, purpose = 'password_reset') {
+async function createOtpRecord(userId, purpose = 'password_reset', ipAddress = null) {
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpHash = await hashOtp(otp);
+    const expiryMinutes = getOtpExpiryMinutes();
+    
     await db.query(
-        `INSERT INTO user_otps (user_id, otp_code, purpose, expires_at, created_at) 
-         VALUES (?, ?, ?, DATE_ADD(NOW(), INTERVAL ? MINUTE), NOW())`,
-        [userId, otp, purpose, OTP_EXPIRY_MINUTES]
+        `INSERT INTO user_otps (user_id, otp_code, otp_hash, purpose, expires_at, ip_address, created_at) 
+         VALUES (?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL ? MINUTE), ?, NOW())`,
+        [userId, otp, otpHash, purpose, expiryMinutes, ipAddress]
     );
     return otp;
 }
 
 async function getActiveOtp(userId, otp, purpose = 'password_reset') {
+    // Get all active OTPs for this user and purpose
     const rows = await db.query(
-        `SELECT id, otp_code, expires_at, used_at 
+        `SELECT id, otp_code, otp_hash, expires_at, used_at 
          FROM user_otps 
-         WHERE user_id = ? AND purpose = ? AND otp_code = ? 
+         WHERE user_id = ? AND purpose = ? 
            AND used_at IS NULL AND expires_at > NOW()
-         ORDER BY id DESC
-         LIMIT 1`,
-        [userId, purpose, otp]
+         ORDER BY id DESC`,
+        [userId, purpose]
     );
-    return rows[0];
+    
+    // Check each OTP (prioritize hashed ones)
+    for (const row of rows) {
+        if (row.otp_hash) {
+            // Use bcrypt comparison for hashed OTPs
+            const isValid = await verifyOtp(otp, row.otp_hash);
+            if (isValid) return row;
+        } else if (row.otp_code === otp) {
+            // Fallback to plain text comparison for legacy OTPs
+            return row;
+        }
+    }
+    
+    return null;
 }
 
 async function markOtpUsed(id) {
     await db.query('UPDATE user_otps SET used_at = NOW() WHERE id = ?', [id]);
 }
 
-function getMailer() {
-    const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD } = process.env;
-    if (!SMTP_HOST || !SMTP_PORT || !SMTP_USER || !SMTP_PASSWORD) {
-        logger.warn('SMTP configuration missing, OTP email will not be sent');
-        return null;
-    }
-    return nodemailer.createTransport({
-        host: SMTP_HOST,
-        port: Number(SMTP_PORT),
-        secure: false,
-        auth: {
-            user: SMTP_USER,
-            pass: SMTP_PASSWORD
-        }
-    });
-}
-
 async function sendOtpEmail(to, otp) {
     if (!isOtpEmailEnabled()) {
-        logger.info('OTP email sending skipped (OTP_EMAIL_ENABLED=false)', { to });
+        logger.info('OTP email sending skipped (EMAIL_ENABLED=false)', { to });
         return;
     }
-    const transporter = getMailer();
-    if (!transporter) return;
-
-    const from = process.env.SMTP_FROM || process.env.SMTP_USER;
-    const mailOptions = {
-        from,
-        to,
-        subject: 'Your OTP Code',
-        text: `Your OTP code is ${otp}. It expires in ${OTP_EXPIRY_MINUTES} minutes.`,
-    };
-
-    try {
-        await transporter.sendMail(mailOptions);
-        logger.info('OTP email sent', { to });
-    } catch (error) {
-        logger.error('Failed to send OTP email', { to, error: error.message });
-    }
+    
+    const expiryMinutes = getOtpExpiryMinutes();
+    await emailService.sendOtpEmail(to, otp, expiryMinutes);
 }
 
-async function requestOtp({ username, userId }) {
+async function requestOtp({ username, userId, ipAddress = null }) {
     let user;
     if (userId) {
         const rows = await db.query(
@@ -184,24 +198,30 @@ async function requestOtp({ username, userId }) {
     if (!user) {
         return { success: false, message: 'User not found' };
     }
-    if (Number(user.role_id) !== TECHNICIAN_ROLE_ID) {
-        return { success: false, message: 'Access denied for this user role' };
-    }
     if (Number(user.is_active) === 0) {
         return { success: false, message: 'User is inactive' };
     }
 
-    const otp = await createOtpRecord(user.id);
+    const otp = await createOtpRecord(user.id, 'password_reset', ipAddress);
 
     // Send OTP via email if configured
     if (user.email) {
         await sendOtpEmail(user.email, otp);
     } else {
         logger.warn('User has no email, OTP not sent', { userId: user.id });
+        return { success: false, message: 'User has no email address configured' };
     }
 
     logger.info('OTP generated', { userId: user.id, username: user.username });
-    return { success: true, otp_dev: otp };
+    
+    // Only return OTP in development mode
+    const isDev = process.env.NODE_ENV !== 'production';
+    return { 
+        success: true, 
+        message: 'OTP sent to your registered email',
+        masked_email: maskEmail(user.email),
+        ...(isDev && { otp_dev: otp })
+    };
 }
 
 async function resetPasswordWithOtp({ username, userId, otp, newPassword }) {

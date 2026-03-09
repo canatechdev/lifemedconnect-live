@@ -1,7 +1,6 @@
 const db = require('../lib/dbconnection');
 const BaseService = require('../lib/baseService');
 const logger = require('../lib/logger');
-const { generateCustomCode } = require('../lib/generateCode');
 
 
 /**
@@ -36,7 +35,7 @@ class DoctorsService extends BaseService {
   async createDoctor(doctor, createdBy = null, connection = null) {
     try {
       logger.info('Creating doctor', { doctorName: doctor.doctor_name, createdBy });
-      
+
       const sql = `
         INSERT INTO doctors (
           user_id, doctor_name, email, mobile, gender, date_of_birth,

@@ -25,6 +25,14 @@ const { uploadLimiter } = require('../middleware/security');
 // Import service
 const service = require('../services/appointments');
 
+// Helper: Look up case_number for file organization
+async function getCaseNumber(appointmentId) {
+    try {
+        const rows = await db.query('SELECT case_number FROM appointments WHERE id = ?', [appointmentId]);
+        return rows?.[0]?.case_number || '';
+    } catch { return ''; }
+}
+
 // Import validation schemas
 const {
     appointmentCreateSchema,
@@ -816,9 +824,10 @@ router.patch('/appointments/:id/medical-status',
 
         // Path for COMPLETED → approval + file upload
         if (medical_status === 'completed') {
+            const caseNo = await getCaseNumber(appointmentId);
             let filesMeta = [];
             if (req.files && req.files.length > 0) {
-                filesMeta = await processMultipleFiles(req.files, 'appointment_medical');
+                filesMeta = await processMultipleFiles(req.files, 'appointment_medical', caseNo);
             }
 
             if (filesMeta.length > 0) {
@@ -1227,7 +1236,10 @@ router.post('/appointments/:id/customer-images',
             return ApiResponse.error(res, 'Image file is required', 400);
         }
 
-        const imageSubfolder = path.join('appointment_customer_images', `appointment_${appointmentId}`, `user_${req.user.id}`);
+        const caseNo = await getCaseNumber(appointmentId);
+        const imageSubfolder = caseNo
+            ? path.join('appointment_customer_images', caseNo)
+            : path.join('appointment_customer_images', `appointment_${appointmentId}`);
         const filePath = await processSingleFile(req.file, imageSubfolder);
         const fileName = req.file.originalname;
 
@@ -1385,7 +1397,8 @@ router.post('/appointments/:id/categorized-reports',
         const { reportType } = req.body;
 
         // Persist files from memory storage to disk and build metadata
-        const savedPaths = await processMultipleFiles(req.files, 'appointment_reports');
+        const caseNo = await getCaseNumber(appointmentId);
+        const savedPaths = await processMultipleFiles(req.files, 'appointment_reports', caseNo);
         const filesMeta = savedPaths.map((filePath, idx) => ({
             file_path: filePath,
             file_name: req.files?.[idx]?.originalname || null,
@@ -1448,9 +1461,10 @@ router.post('/appointments/:id/reports',
             }
         }
 
+        const caseNo = await getCaseNumber(appointmentId);
         let filesMeta = [];
         if (req.files && req.files.length > 0) {
-            filesMeta = await processMultipleFiles(req.files, 'appointment_reports');
+            filesMeta = await processMultipleFiles(req.files, 'appointment_reports', caseNo);
         }
 
         const result = await service.saveAppointmentReports(
@@ -1550,6 +1564,22 @@ router.get('/appointments/:id/master-pdf',
     asyncHandler(async (req, res) => {
         const appointmentId = parseInt(req.params.id);
         const result = await service.generateMasterPDF(appointmentId);
+        return ApiResponse.success(res, result);
+    })
+);
+
+// Send appointment PDF via email to client
+router.post('/appointments/:id/send-email',
+    verifyToken,
+    requirePermission('appointments.view'),
+    asyncHandler(async (req, res) => {
+        const appointmentId = parseInt(req.params.id);
+        const result = await service.sendAppointmentEmailToClient(appointmentId);
+        
+        if (!result.success) {
+            return ApiResponse.error(res, result.message, result.statusCode || 500);
+        }
+        
         return ApiResponse.success(res, result);
     })
 );

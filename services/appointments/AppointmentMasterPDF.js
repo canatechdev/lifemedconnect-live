@@ -5,6 +5,7 @@ const { PDFDocument } = require('pdf-lib');
 const db = require('../../lib/dbconnection');
 const logger = require('../../lib/logger');
 const { safeText, unwrapRows, getLetterheadDataUrl, parseApiDate, isAbnormal, generateFilename, collectImagePaths, buildPdfHtml, generatePdfBuffer, getStandardMargins } = require('../../lib/pdfUtils');
+const { sanitizeFolderName } = require('../../lib/fileUpload');
 
 class AppointmentMasterPDFService {
     /**
@@ -643,14 +644,20 @@ class AppointmentMasterPDFService {
     }
 
     async savePDF(pdfBuffer, caseNumber) {
-        const uploadsDir = path.join(__dirname, '../../uploads/appointment_master_pdfs');
+        // Organize by case_number subfolder
+        const safeCaseFolder = sanitizeFolderName(caseNumber);
+        const uploadsDir = safeCaseFolder
+            ? path.join(__dirname, '../../uploads/appointment_master_pdfs', safeCaseFolder)
+            : path.join(__dirname, '../../uploads/appointment_master_pdfs');
         await fs.mkdir(uploadsDir, { recursive: true });
         const timestamp = Date.now();
         const sanitizedCaseNumber = (caseNumber || 'UNKNOWN').replace(/[^a-zA-Z0-9]/g, '_');
         const filename = `master_${sanitizedCaseNumber}_${timestamp}.pdf`;
         const filepath = path.join(uploadsDir, filename);
         await fs.writeFile(filepath, pdfBuffer);
-        return `uploads/appointment_master_pdfs/${filename}`;
+        return safeCaseFolder
+            ? `uploads/appointment_master_pdfs/${safeCaseFolder}/${filename}`
+            : `uploads/appointment_master_pdfs/${filename}`;
     }
 }
 

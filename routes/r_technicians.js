@@ -11,11 +11,20 @@ const logger = require('../lib/logger');
 const { parsePaginationParams } = require('../lib/helpers');
 const { mixedUpload } = require('../lib/multer');
 const { processSingleFile } = require('../lib/fileUpload');
+const db = require('../lib/dbconnection');
+
+// Helper: Look up technician_code for file organization
+async function getTechnicianCode(technicianId) {
+    try {
+        const rows = await db.query('SELECT technician_code FROM technicians WHERE id = ?', [technicianId]);
+        return rows?.[0]?.technician_code || '';
+    } catch { return ''; }
+}
 
 const technicianSchema = Joi.object({
   user_id: Joi.number().integer().optional().allow(null),
   center_id: Joi.number().integer().required(),
-  technician_code: Joi.string().max(50).required(),
+  technician_code: Joi.string().max(50).optional().allow('', null),
   technician_type: Joi.string().valid('On-Roll', 'In-House').default('In-House'),
   rate_per_appointment: Joi.number().precision(2).default(0.00),
   profile_pic: Joi.string().max(255).optional().allow(null, ''),
@@ -87,9 +96,10 @@ router.post('/technicians', verifyToken, requirePermission('technicians.create')
 
 
 router.put('/technicians/:id', verifyToken, requirePermission('technicians.update'), mixedUpload.single('profile_pic_file'), validateRequest(technicianUpdateSchema), asyncHandler(async (req, res) => {
+  const techCode = await getTechnicianCode(req.params.id);
   let profilePicPath = null;
   if (req.file) {
-    profilePicPath = await processSingleFile(req.file, 'technicians');
+    profilePicPath = await processSingleFile(req.file, 'technicians', techCode);
   }
 
   const updates = { ...req.body };

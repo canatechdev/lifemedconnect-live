@@ -30,30 +30,7 @@ router.post('/auth/login', async (req, res) => {
     }
 });
 
-// Change password (requires token)
-router.post('/auth/change-password', verifyToken, async (req, res) => {
-    try {
-        const { old_password, new_password } = req.body;
-        if (!old_password || !new_password) {
-            return ApiResponse.appError(res, 'Old and new passwords are required', 400);
-        }
 
-        const result = await authService.changePassword({
-            userId: req.user.id,
-            oldPassword: old_password,
-            newPassword: new_password
-        });
-
-        if (!result.success) {
-            return ApiResponse.appError(res, result.message || 'Change password failed', 400);
-        }
-
-        return ApiResponse.appSuccess(res, 'Password changed successfully');
-    } catch (error) {
-        logger.error('App change-password error', { error: error.message });
-        return ApiResponse.appError(res, 'Internal server error', 500);
-    }
-});
 
 // Request OTP (generic; for now used for password reset)
 router.post('/auth/request-otp', verifyTokenOptional, async (req, res) => {
@@ -64,14 +41,15 @@ router.post('/auth/request-otp', verifyTokenOptional, async (req, res) => {
             return ApiResponse.appError(res, 'Username is required when not authenticated', 400);
         }
 
-        const result = await authService.requestOtp({ username, userId });
+        const ipAddress = req.ip || req.connection.remoteAddress;
+        const result = await authService.requestOtp({ username, userId, ipAddress });
         if (!result.success) {
-            return ApiResponse.error(res, result.message || 'Request failed', 400);
+            return ApiResponse.appError(res, result.message || 'Request failed', 400);
         }
 
-        // In production, send OTP via email/SMS. For now, return masked/dev helper.
-        return ApiResponse.appSuccess(res, 'OTP sent to registered contact', {
-            otp_dev: result.otp_dev // remove in production
+        return ApiResponse.appSuccess(res, result.message || 'OTP sent to registered email', {
+            masked_email: result.masked_email,
+            ...(result.otp_dev && { otp_dev: result.otp_dev }) // only in development
         });
     } catch (error) {
         logger.error('App forgot-password error', { error: error.message });
@@ -99,5 +77,32 @@ router.post('/auth/reset-password', async (req, res) => {
         return ApiResponse.appError(res, 'Internal server error', 500);
     }
 });
+
+
+// Change password (requires token)
+router.post('/auth/change-password', verifyToken, async (req, res) => {
+    try {
+        const { old_password, new_password } = req.body;
+        if (!old_password || !new_password) {
+            return ApiResponse.appError(res, 'Old and new passwords are required', 400);
+        }
+
+        const result = await authService.changePassword({
+            userId: req.user.id,
+            oldPassword: old_password,
+            newPassword: new_password
+        });
+
+        if (!result.success) {
+            return ApiResponse.appError(res, result.message || 'Change password failed', 400);
+        }
+
+        return ApiResponse.appSuccess(res, 'Password changed successfully');
+    } catch (error) {
+        logger.error('App change-password error', { error: error.message });
+        return ApiResponse.appError(res, 'Internal server error', 500);
+    }
+});
+
 
 module.exports = router;

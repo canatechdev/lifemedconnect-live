@@ -137,6 +137,7 @@ const appAppointmentRoutes = require('./routes/app/r_app_appointments');
 const appDashboardRoutes = require('./routes/app/r_app_dashboard');
 const rbacRoutes = require('./routes/r_rbac');
 const telephonyRoutes = require('./routes/r_telephony');
+const smartReportRoutes = require('./routes/r_smart_reports');
 
 // Health check route
 app.get('/', (req, res) => {
@@ -195,6 +196,7 @@ app.use('/api', approvalRoutes);
 app.use('/api',dashboard)
 app.use('/api', rbacRoutes);
 app.use('/api/telephony', telephonyRoutes);
+app.use('/api/smart-reports', smartReportRoutes);
 // App (mobile) routes (no CSRF)
 app.use('/api/app', appAuthRoutes);
 app.use('/api/app', appAppointmentRoutes);
