@@ -13,14 +13,14 @@ const helmetConfig = helmet({
     contentSecurityPolicy: {
         directives: {
             defaultSrc: ["'self'"],
-            styleSrc: ["'self'", "'unsafe-inline'"], // Allow inline styles for UI libraries
-            scriptSrc: ["'self'"],
-            imgSrc: ["'self'", "data:", "https:", "blob:"], // Allow images from various sources
-            connectSrc: ["'self'"], // Allow API calls to same origin
-            fontSrc: ["'self'", "data:"],
-            objectSrc: ["'none'"], // Block plugins
+            styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+            scriptSrc: ["'self'", 'https://www.google.com/recaptcha/', 'https://www.gstatic.com/recaptcha/', 'https://*.google.com', 'https://*.gstatic.com'],
+            imgSrc: ["'self'", "data:", "https:", "blob:"],
+            connectSrc: ["'self'", 'https://www.google.com/recaptcha/', 'https://www.gstatic.com/recaptcha/', 'https://*.google.com', 'https://*.gstatic.com'],
+            fontSrc: ["'self'", "data:", 'https://fonts.gstatic.com'],
+            objectSrc: ["'none'"],
             mediaSrc: ["'self'"],
-            frameSrc: ["'none'"], // Block iframes
+            frameSrc: ["'self'", 'https://www.google.com/recaptcha/', 'https://www.gstatic.com/recaptcha/', 'https://*.google.com', 'https://*.gstatic.com'],
             upgradeInsecureRequests: [], // Upgrade HTTP to HTTPS
         },
     },

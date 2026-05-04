@@ -233,11 +233,23 @@ const buildDisplayChanges = async (approval) => {
             continue;
         }
 
+        // Special handling for friendly field names
+        let displayField = field;
+        if (field === 'reschedule_reason') {
+            displayField = 'Reschedule Remarks';
+        } else if (field === 'medical_remarks') {
+            displayField = 'Medical Remarks';
+        } else if (field === 'aadhaar_number') {
+            displayField = 'Aadhaar Number';
+        } else if (field === 'pan_number') {
+            displayField = 'PAN Number';
+        }
+        
         const [oldDisplay, oldType] = await resolver(field, oldVal);
         const [newDisplay, newType] = await resolver(field, newVal);
 
         changes.push({
-            field,
+            field: displayField,
             oldValue: oldDisplay,
             newValue: newDisplay,
             type: newType || oldType || 'text'

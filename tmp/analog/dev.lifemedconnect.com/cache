@@ -1,0 +1,25 @@
+CACHE type 5 produced by analog 6.0/Unix. Do not modify or delete!
+T	0	0	0	0	0	19	0
+D	29564524	29565541
+1	0	0	0	5	0	0	29565541	0	0	29564524	0	/
+1	0	0	0	1	0	0	29565126	0	0	29565126	0	/wp/wp-includes/wlwmanifest.xml
+1	0	0	0	1	0	0	29565126	0	0	29565126	0	/web/wp-includes/wlwmanifest.xml
+1	0	0	0	1	0	0	29565126	0	0	29565126	0	/site/wp-includes/wlwmanifest.xml
+1	0	0	0	1	0	0	29565126	0	0	29565126	0	/blog/wp-includes/wlwmanifest.xml
+1	0	0	0	1	0	0	29565126	0	0	29565126	0	/website/wp-includes/wlwmanifest.xml
+1	0	0	0	1	0	0	29565126	0	0	29565126	0	/test/wp-includes/wlwmanifest.xml
+1	0	0	0	1	0	0	29565126	0	0	29565126	0	/sito/wp-includes/wlwmanifest.xml
+1	0	0	0	1	0	0	29565126	0	0	29565126	0	/news/wp-includes/wlwmanifest.xml
+1	0	0	0	1	0	0	29565126	0	0	29565126	0	/cms/wp-includes/wlwmanifest.xml
+1	0	0	0	1	0	0	29565126	0	0	29565126	0	/xmlrpc.php?rsd
+1	0	0	0	1	0	0	29565126	0	0	29565126	0	/wp2/wp-includes/wlwmanifest.xml
+1	0	0	0	1	0	0	29565126	0	0	29565126	0	/wp-includes/wlwmanifest.xml
+1	0	0	0	1	0	0	29565126	0	0	29565126	0	/wordpress/wp-includes/wlwmanifest.xml
+1	0	0	0	1	0	0	29565126	0	0	29565126	0	/wp1/wp-includes/wlwmanifest.xml
+4	0	0	0	17	0	0	29565126	0	0	29565126	0	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0 Safari/537.36
+4	0	0	0	1	0	0	29565541	0	0	29565541	0	visionheight.com/scan Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/126.0.0.0 Safari/537.36
+4	0	0	0	1	0	0	29564524	0	0	29564524	0	Mozilla/5.0 (compatible; CMS-Checker/1.0; +https://example.com)
+5	0	0	0	1	0	0	29564524	0	0	29564524	0	34.56.152.242
+5	0	0	0	1	0	0	29565541	0	0	29565541	0	3.18.186.238
+5	0	0	0	17	0	0	29565126	0	0	29565126	0	157.245.150.11
+c	404	19	29565541

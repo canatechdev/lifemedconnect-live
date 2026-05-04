@@ -6,7 +6,7 @@
 const express = require('express');
 const router = express.Router();
 const { verifyToken } = require('../lib/auth');
-const { requirePermission } = require('../lib/permissions');
+const { requirePermission, requireAnyPermission } = require('../lib/permissions');
 const { asyncHandler } = require('../middleware/errorHandler');
 const validateRequest = require('../middleware/validateRequest');
 const ApiResponse = require('../lib/response');
@@ -83,6 +83,66 @@ router.get('/appointments/sample-template',
     await workbook.xlsx.write(res);
     res.end();
 }));
+
+// Export Appointments with Filters
+router.get('/appointments/export',
+    verifyToken,
+    requirePermission('appointments.export'),
+    asyncHandler(async (req, res) => {
+        const filters = {
+            month: req.query.month,
+            year: req.query.year,
+            customerCategory: req.query.customerCategory,
+            visitType: req.query.visitType,
+            status: req.query.status,
+            medicalStatus: req.query.medicalStatus,
+            qcStatus: req.query.qcStatus,
+            search: req.query.q
+        };
+
+        logger.info('Exporting appointments', {
+            userId: req.user.id,
+            filters
+        });
+
+        // Fetch all appointments matching filters
+        const appointments = await service.getAppointmentsForExport(filters);
+
+        // Generate Excel workbook
+        const workbook = await service.generateExportExcel(appointments, filters);
+
+        // Generate descriptive filename
+        const now = new Date();
+        const downloadDate = `${String(now.getDate()).padStart(2, '0')}-${String(now.getMonth() + 1).padStart(2, '0')}-${now.getFullYear()}`;
+        const downloadTime = `${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}`;
+        
+        let filterPart = '';
+        if (filters.month && filters.year) {
+            const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            filterPart = `_${monthNames[parseInt(filters.month) - 1]}_${filters.year}`;
+        } else if (filters.year) {
+            filterPart = `_${filters.year}`;
+        }
+        
+        if (filters.status) {
+            filterPart += `_${filters.status}`;
+        }
+        
+        const filename = `Appointments${filterPart}_Export_${downloadDate}_${downloadTime}.xlsx`;
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+
+        await workbook.xlsx.write(res);
+        res.end();
+
+        logger.info('Export completed', {
+            userId: req.user.id,
+            recordCount: appointments.length,
+            filename
+        });
+    })
+);
 
 // Upload Excel File
 //  NEW: Apply upload rate limiter (30 uploads per 15 minutes)
@@ -211,9 +271,15 @@ router.get('/appointments', verifyToken, requirePermission('appointments.view'),
     const sortBy = req.query.sortBy || 'id';
     const sortOrder = req.query.sortOrder || 'DESC';
     const customerCategory = req.query.customerCategory || '';
+    const month = req.query.month || '';
+    const year = req.query.year || '';
+    const visitType = req.query.visitType || '';
+    const status = req.query.status || '';
+    const medicalStatus = req.query.medicalStatus || '';
+    const qcStatus = req.query.qcStatus || '';
 
     // If requester is a diagnostic center user, restrict to their appointments only
-    const centerIdFromToken = req.user?.diagnostic_center_id || req.user?.center_id;
+    const centerIdFromToken = req.user?.diagnostic_center_id || req.user?.center_id;   
     if (centerIdFromToken) {
         const result = await service.listAppointmentsbyDiagnosticCenters({
             page,
@@ -221,13 +287,36 @@ router.get('/appointments', verifyToken, requirePermission('appointments.view'),
             search,
             centerId: centerIdFromToken,
             listType: 'all',
-            customerCategory
+            customerCategory,
+            month,
+            year,
+            visitType,
+            status,
+            medicalStatus,
+            qcStatus,
+            userId: req.user?.id,
+            userRole: req.user?.role_id
         });
         return ApiResponse.paginated(res, result.data, result.pagination);
     }
 
-    // Admin/Super Admin: return all
-    const result = await service.listAppointments({ page, limit, search, sortBy, sortOrder, customerCategory });
+    // Pass user information for TPA filtering
+    const result = await service.listAppointments({ 
+        page, 
+        limit, 
+        search, 
+        sortBy, 
+        sortOrder, 
+        customerCategory,
+        month,
+        year,
+        visitType,
+        status,
+        medicalStatus,
+        qcStatus,
+        userId: req.user?.id,
+        userRole: req.user?.role_id
+    });
     return ApiResponse.paginated(res, result.data, result.pagination);
 }));
 
@@ -304,6 +393,11 @@ router.get('/appointments/Technician', verifyToken, requirePermission('appointme
 }));
 
 
+// QC - Check access permissions for safe navigation
+router.get('/appointments/qc/check', verifyToken, requirePermission('appointments.qc'), asyncHandler(async (req, res) => {
+    return ApiResponse.success(res, { hasAccess: true }, 'QC access verified');
+}));
+
 // QC - List pending QC appointments
 router.get('/appointments/qc/pending', verifyToken, requirePermission('appointments.qc'), asyncHandler(async (req, res) => {
     const page = parseInt(req.query.page) || 1;
@@ -330,10 +424,22 @@ router.get('/appointments/qc-history', verifyToken, requirePermission('appointme
 }));
 
 // Get QC details for appointment
-router.get('/appointments/:id/qc-details', verifyToken, requirePermission('appointments.qc'), asyncHandler(async (req, res) => {
+router.get('/appointments/:id/qc-details', verifyToken, requirePermission('appointments.qc_details'), asyncHandler(async (req, res) => {
     const appointmentId = parseInt(req.params.id);
     const centerId = req.user.center_id || null;
-    const qcDetails = await service.getQcDetails(appointmentId, centerId);
+    const userId = req.user.id;
+    
+    // Fetch role name from database using role_id
+    let userRole = null;
+    if (req.user.role_id) {
+        const roleSql = 'SELECT role_name FROM roles WHERE id = ?';
+        const roleRows = await db.query(roleSql, [req.user.role_id]);
+        if (roleRows && roleRows.length > 0) {
+            userRole = roleRows[0].role_name;
+        }
+    }
+    
+    const qcDetails = await service.getQcDetails(appointmentId, centerId, userId, userRole);
     
     if (!qcDetails) {
         return ApiResponse.notFound(res, 'QC details not found');
@@ -465,7 +571,8 @@ router.post('/appointments/delete',
             getFunction: async () => ids.length > 1
                 ? await service.getAppointmentsByIds(ids)
                 : await service.getAppointment(ids[0]),
-            deleteFunction: service.softDeleteAppointments
+            deleteFunction: service.softDeleteAppointments,
+            user: req.user
         });
 
         const response = formatApprovalResponse(result);
@@ -646,9 +753,28 @@ router.get('/appointments/center/report', verifyToken, requirePermission('appoin
     const sortOrder = req.query.sortOrder || 'DESC';
     const customerCategory = req.query.customerCategory || '';
 
-    const centerIdFromToken = req.user?.center_id || req.user?.diagnostic_center_id;
+    // Check if user is admin (no center_id or role_id indicates admin)
+    const userCenterId = req.user?.center_id || req.user?.diagnostic_center_id;
+    const isCenterUser = !!userCenterId;
+    const isAdmin = !isCenterUser; // Admin users don't have center_id
+
+    if (isAdmin) {
+        // Admin/Super Admin: fetch all completed appointments without center filtering
+        const result = await service.listAllConfirmedAppointments({
+            page,
+            limit,
+            search,
+            listType: 'completed',
+            sortBy,
+            sortOrder,
+            customerCategory
+        });
+        return ApiResponse.paginated(res, result.data, result.pagination);
+    }
+
+    // Center users: apply center filtering
     const centerIdFromQuery = req.query.centerId !== undefined ? parseInt(req.query.centerId) : undefined;
-    const centerId = centerIdFromToken || centerIdFromQuery;
+    const centerId = userCenterId || centerIdFromQuery;
 
     if (centerId) {
         const result = await service.listAppointmentsbyDiagnosticCenters({
@@ -664,17 +790,7 @@ router.get('/appointments/center/report', verifyToken, requirePermission('appoin
         return ApiResponse.paginated(res, result.data, result.pagination);
     }
 
-    // Admin/Super Admin: allow without centerId, fetch all completed
-    const result = await service.listAllConfirmedAppointments({
-        page,
-        limit,
-        search,
-        listType: 'completed',
-        sortBy,
-        sortOrder,
-        customerCategory
-    });
-    return ApiResponse.paginated(res, result.data, result.pagination);
+    return ApiResponse.error(res, 'Center ID is required for center users', 400);
 }));
 
 // Confirm Schedule
@@ -683,39 +799,28 @@ router.patch('/appointments/:id/confirm-schedule',
     requirePermission('appointments.assign_center'),
     validateRequest(confirmScheduleSchema),
     asyncHandler(async (req, res) => {
-        const { confirmed_date, confirmed_time } = req.body;
+        const { confirmed_date, confirmed_time, actor_context } = req.body;
         const centerId = req.user.center_id || null;
         const technicianId = req.user.technician_id || null;
         
-        // Build actorContext for Both appointments
-        let actorContext = centerId
-            ? { centerId, type: 'center' }
-            : (technicianId ? { technicianId, type: 'technician' } : null);
-
-        // Fallback: if Both appointment and actorContext still null, infer side from appointment
-        if (!actorContext) {
-            try {
-                const appt = await service.getAppointment(req.params.id);
-                if (appt?.visit_type === 'Both') {
-                    // If caller has centerId matching a side, use it
-                    if (centerId && appt.center_id === centerId) {
-                        actorContext = { centerId, type: 'center' };
-                    } else if (centerId && appt.other_center_id === centerId) {
-                        actorContext = { centerId, type: 'technician' };
-                    } else {
-                        // If no centerId from user, choose the side that is not yet confirmed
-                        if (!appt.center_confirmed_at) {
-                            actorContext = { centerId: appt.center_id, type: 'center' };
-                        } else if (!appt.home_confirmed_at) {
-                            actorContext = { centerId: appt.other_center_id, type: 'technician' };
-                        }
-                    }
-                }
-            } catch (e) {
-                // swallow; fallback leaves actorContext null
-            }
-        }
+        // Build actor context - support both old flow (from user) and new flow (from request body)
+        let actorContext = null;
         
+        // NEW FLOW: Check if actor_context is provided in request body
+        if (actor_context && (actor_context.centerId || actor_context.technicianId)) {
+            actorContext = {
+                centerId: actor_context.centerId || null,
+                technicianId: actor_context.technicianId || null,
+                type: actor_context.type || (actor_context.centerId ? 'center' : 'technician')
+            };
+        }
+        // OLD FLOW: Fall back to user's center/technician ID
+        else if (centerId) {
+            actorContext = { centerId, type: 'center' };
+        } else if (technicianId) {
+            actorContext = { technicianId, type: 'technician' };
+        }
+
         const result = await service.confirmSchedule(
             req.params.id,
             toMySqlDate(confirmed_date),
@@ -733,66 +838,49 @@ router.patch('/appointments/:id/reschedule',
     requirePermission('appointments.update'),
     validateRequest(rescheduleSchema),
     asyncHandler(async (req, res) => {
-        const { confirmed_date, confirmed_time, reschedule_reason } = req.body;
+        const { confirmed_date, confirmed_time, reschedule_reason, actor_context } = req.body;
         const centerId = req.user.center_id || null;
         const technicianId = req.user.technician_id || null;
+        
         const normalizedDate = toMySqlDate(confirmed_date);
         const normalizedTime = toMySqlTime(confirmed_time);
         const appointmentId = parseInt(req.params.id, 10);
 
-        let actorContext = centerId
-            ? { centerId, type: 'center' }
-            : (technicianId ? { technicianId, type: 'technician' } : null);
-
-        // Fallback inference for Both appointments when missing
-        if (!actorContext) {
-            try {
-                const appt = await service.getAppointment(appointmentId);
-                if (appt?.visit_type === 'Both') {
-                    if (centerId && appt.center_id === centerId) {
-                        actorContext = { centerId, type: 'center' };
-                    } else if (centerId && appt.other_center_id === centerId) {
-                        actorContext = { centerId, type: 'technician' };
-                    } else {
-                        if (!appt.center_reschedule_remark) {
-                            actorContext = { centerId: appt.center_id, type: 'center' };
-                        } else if (!appt.home_reschedule_remark) {
-                            actorContext = { centerId: appt.other_center_id, type: 'technician' };
-                        } else {
-                            // default to center side if both already have remarks
-                            actorContext = { centerId: appt.center_id, type: 'center' };
-                        }
-                    }
-                }
-            } catch (e) {
-                // leave actorContext null if lookup fails
-            }
+        
+        // Build actor context - support both old flow (from user) and new flow (from request body)
+        let actorContext = null;
+        
+        // NEW FLOW: Check if actor_context is provided in request body
+        if (actor_context && (actor_context.centerId || actor_context.technicianId)) {
+            actorContext = {
+                centerId: actor_context.centerId || null,
+                technicianId: actor_context.technicianId || null,
+                type: actor_context.type || (actor_context.centerId ? 'center' : 'technician')
+            };
+        }
+        // OLD FLOW: Fall back to user's center/technician ID
+        else if (centerId) {
+            actorContext = { centerId, type: 'center' };
+        }
+        else if (technicianId) {
+            actorContext = { technicianId, type: 'technician' };
         }
 
-        const result = await updateWithApproval({
-            entity_type: 'appointment',
-            entity_id: appointmentId,
-            getFunction: async (id) => await service.getAppointment(id),
-            updateFunction: async (id) => await service.rescheduleAppointment(
-                id,
-                normalizedDate,
-                normalizedTime,
-                reschedule_reason,
-                req.user.id,
-                actorContext
-            ),
-            new_data: {
-                confirmed_date: normalizedDate,
-                confirmed_time: normalizedTime,
-                medical_status: 'rescheduled',
-                _actorContext: actorContext // Store for approval
-            },
-            user: req.user,
-            notes: actorContext ? `Reschedule by ${actorContext.type} (ID: ${actorContext.centerId}): ${reschedule_reason || 'No reason'}` : (reschedule_reason || '')
-        });
+        // For reschedule, don't require explicit center context for Both appointments
+        // The service layer will handle the context appropriately
 
-        const response = formatApprovalResponse(result);
-        return ApiResponse.success(res, response, response.message);
+        // APPROVAL REMOVED: Reschedule no longer requires approval for any user
+        // Direct update for all users - no approval flow needed
+        const result = await service.rescheduleAppointment(
+            appointmentId,
+            normalizedDate,
+            normalizedTime,
+            reschedule_reason,
+            req.user.id,
+            actorContext
+        );
+
+        return ApiResponse.success(res, result, 'Appointment rescheduled successfully');
     })
 );
 
@@ -804,11 +892,12 @@ router.patch('/appointments/:id/medical-status',
     mixedUpload.any(),
     validateRequest(medicalStatusSchema),
     asyncHandler(async (req, res) => {
-        const { medical_status, aadhaar_number, pan_number, medical_remarks, pending_report_types } = req.body;
+        const { medical_status, aadhaar_number, pan_number, medical_remarks, pending_report_types, actor_context } = req.body;
         const centerId = req.user.center_id || null;
         const numericUserId = req.user.id;
         const appointmentId = parseInt(req.params.id, 10);
 
+        
         // Normalize pending_report_types into array
         let pendingTypesArray = [];
         if (pending_report_types) {
@@ -822,77 +911,76 @@ router.patch('/appointments/:id/medical-status',
             }
         }
 
-        // Path for COMPLETED → approval + file upload
+        // Build actor context - support both old flow (from user) and new flow (from request body)
+        let actorContext = null;
+        
+        // NEW FLOW: Check if actor_context is provided in request body (for Super Admin, Technicians, etc.)
+        if (actor_context && actor_context.centerId) {
+            actorContext = {
+                centerId: actor_context.centerId,
+                type: actor_context.type || 'center' // Default to 'center' if not specified
+            };
+                    }
+        // OLD FLOW: Fall back to user's center_id (for regular center users)
+        else if (centerId) {
+            actorContext = {
+                centerId: centerId,
+                type: 'center'
+            };
+        }
+        
+        // For Both appointments, require explicit context
+        if (!actorContext) {
+            const appt = await service.getAppointment(appointmentId);
+            if (appt?.visit_type === 'Both') {
+                throw new Error('Both appointments require explicit center context. Please ensure centerId is provided.');
+            }
+        }
+        
+
+        // Path for COMPLETED status
         if (medical_status === 'completed') {
             const caseNo = await getCaseNumber(appointmentId);
             let filesMeta = [];
+            
+            // Process files if any
             if (req.files && req.files.length > 0) {
                 filesMeta = await processMultipleFiles(req.files, 'appointment_medical', caseNo);
+
+                if (filesMeta.length > 0) {
+                    await service.saveAppointmentMedicalFiles(
+                        appointmentId,
+                        filesMeta,
+                        numericUserId
+                    );
+                }
             }
 
-            if (filesMeta.length > 0) {
-                await service.saveAppointmentMedicalFiles(
-                    appointmentId,
-                    filesMeta,
-                    numericUserId
-                );
-            }
-
-            // Build actor context for center users to preserve in approval metadata
-            const actorContext = centerId ? {
-                centerId: centerId,
-                type: 'center'
-            } : null;
-
-            const result = await updateWithApproval({
-                entity_type: 'appointment',
-                action_type: 'update',
-                entity_id: appointmentId,
-                new_data: {
-                    medical_status: 'completed',
-                    medical_remarks,
+            // APPROVAL REMOVED: Medical completion no longer requires approval for any user
+            // Direct update for all users - no approval flow needed
+            const result = await service.updateMedicalStatus(
+                appointmentId,
+                medical_status,
+                {
                     aadhaar_number,
                     pan_number,
-                    updated_by: numericUserId,
-                    _actorContext: actorContext // Store for later retrieval
+                    medical_remarks,
+                    pending_report_types: pendingTypesArray,
                 },
-                created_by: numericUserId,
-                role_id: req.user.role_id,
-                getFunction: service.getAppointment,
-                updateFunction: service.updateAppointment,
-                user: req.user,
-                notes: actorContext ? `Medical completion requested by ${actorContext.type} (ID: ${actorContext.centerId})` : 'Medical completion requested with remarks and file upload',
-                priority: 'high',
+                numericUserId,
+                actorContext
+            );
+
+            // Fetch and return completion status for 'Both' appointments
+            const completionStatus = await service.getAppointmentCompletionStatus(appointmentId);
+
+            return ApiResponse.success(res, {
+                ...result,
+                completion_status: completionStatus
             });
-
-            const response = formatApprovalResponse(result);
-            return ApiResponse.success(res, response, response.message);
         }
 
-        // Normal path for arrived / in_process / partially_completed
-        // Build actor context for center users
-        let actorContext = centerId ? {
-            centerId: centerId,
-            type: 'center'
-        } : null;
-
-        // Fallback inference for Both appointments when actorContext missing (e.g., frontend not sending centerId)
-        if (!actorContext) {
-            try {
-                const appt = await service.getAppointment(appointmentId);
-                if (appt?.visit_type === 'Both') {
-                    if (appt.center_id) {
-                        actorContext = { centerId: appt.center_id, type: 'center' };
-                    } else if (appt.other_center_id) {
-                        // treat other_center as technician/home side
-                        actorContext = { centerId: appt.other_center_id, type: 'technician' };
-                    }
-                }
-            } catch (e) {
-                // leave actorContext null if lookup fails
-            }
-        }
-
+        // Normal path for other statuses (arrived / in_process / partially_completed)
         const result = await service.updateMedicalStatus(
             appointmentId,
             medical_status,
@@ -932,11 +1020,26 @@ router.post('/appointments/:id/push-back',
     requirePermission('appointments.update'),
     validateRequest(pushBackSchema),
     asyncHandler(async (req, res) => {
+        const { actor_context } = req.body;
         const centerId = req.user.center_id || null;
         const technicianId = req.user.technician_id || null;
-        let actorContext = centerId
-            ? { centerId, type: 'center' }
-            : (technicianId ? { technicianId, type: 'technician' } : null);
+        
+        // Build actor context - support both old flow (from user) and new flow (from request body)
+        let actorContext = null;
+        
+        // NEW FLOW: Check if actor_context is provided in request body
+        if (actor_context && actor_context.centerId) {
+            actorContext = {
+                centerId: actor_context.centerId,
+                type: actor_context.type || 'center'
+            };
+        }
+        // OLD FLOW: Fall back to user's center/technician ID
+        else if (centerId) {
+            actorContext = { centerId, type: 'center' };
+        } else if (technicianId) {
+            actorContext = { technicianId, type: 'technician' };
+        }
 
         // Allow both field names for remarks
         const remarks = req.body.push_back_reason || req.body.pushback_remarks || null;
@@ -1066,7 +1169,7 @@ router.get('/appointments/:id/center/:centerId',
 // Download Proforma Invoice PDF
 router.get('/appointments/:id/proforma-invoice',
     verifyToken,
-    requirePermission('appointments.proforma'),
+    requireAnyPermission(['appointments.view', 'appointments.lifecycle']),
     asyncHandler(async (req, res) => {
         const appointmentId = parseInt(req.params.id);
         const result = await service.generateProformaInvoicePdf(appointmentId);
@@ -1286,7 +1389,8 @@ router.patch('/appointments/:id/push-back-to-reports',
     asyncHandler(async (req, res) => {
         const appointmentId = parseInt(req.params.id);
         const { remarks } = req.body;
-        const result = await service.pushBackToReports(appointmentId, remarks, req.user.id);
+        const centerId = req.user.diagnostic_center_id || null;
+        const result = await service.pushBackToReports(appointmentId, remarks, req.user.id, centerId);
         return ApiResponse.success(res, result);
     })
 );
@@ -1299,7 +1403,8 @@ router.post('/appointments/:id/qc/push-back',
     asyncHandler(async (req, res) => {
         const appointmentId = parseInt(req.params.id);
         const { remarks } = req.body;
-        const result = await service.pushBackToReports(appointmentId, remarks, req.user.id);
+        const centerId = req.user.diagnostic_center_id || null;
+        const result = await service.pushBackToReports(appointmentId, remarks, req.user.id, centerId);
         return ApiResponse.success(res, result);
     })
 );
@@ -1354,7 +1459,7 @@ router.patch('/appointments/customer-images/:imageId/label',
 // Get all documents for an appointment
 router.get('/appointments/:id/documents',
     verifyToken,
-    requirePermission('appointments.view'),
+    requireAnyPermission(['appointments.view', 'appointments.lifecycle']),
     asyncHandler(async (req, res) => {
         const appointmentId = parseInt(req.params.id);
         const documents = await service.getDocuments(appointmentId);
@@ -1365,7 +1470,7 @@ router.get('/appointments/:id/documents',
 // Get all customer images for an appointment
 router.get('/appointments/:id/customer-images',
     verifyToken,
-    requirePermission('appointments.view'),
+    requireAnyPermission(['appointments.view', 'appointments.lifecycle']),
     asyncHandler(async (req, res) => {
         const appointmentId = parseInt(req.params.id);
         const images = await service.getCustomerImages(appointmentId);
@@ -1380,7 +1485,24 @@ router.get('/appointments/:id/categorized-reports',
     asyncHandler(async (req, res) => {
         const appointmentId = parseInt(req.params.id);
         const centerId = req.user.center_id || null;
-        const reports = await service.getCategorizedReports(appointmentId, centerId);
+        const userId = req.user.id;
+        
+        // Fetch role name from database using role_id
+        let userRole = null;
+        if (req.user.role_id) {
+            const roleSql = 'SELECT role_name FROM roles WHERE id = ?';
+            const roleRows = await db.query(roleSql, [req.user.role_id]);
+            if (roleRows && roleRows.length > 0) {
+                userRole = roleRows[0].role_name;
+            }
+        }
+        
+        // DEBUG: Log user object to understand structure
+        console.log('User Object Debug:', JSON.stringify(req.user, null, 2));
+        console.log('Extracted Values:', { centerId, userId, userRole });
+        
+        const reports = await service.getCategorizedReports(appointmentId, centerId, userId, userRole);
+        console.log('Reports returned:', JSON.stringify(reports, null, 2));
         return ApiResponse.success(res, reports);
     })
 );
@@ -1509,9 +1631,20 @@ router.post('/appointments/:id/pathology/fetch',
     verifyToken,
     requirePermission('appointments.upload_docs'),
     asyncHandler(async (req, res) => {
-        const appointmentId = parseInt(req.params.id);
-        const result = await service.fetchAndSavePathologyData(appointmentId, req.user.id);
-        return ApiResponse.success(res, result);
+        try {
+            const appointmentId = parseInt(req.params.id);
+            const result = await service.fetchAndSavePathologyData(appointmentId, req.user.id);
+            return ApiResponse.success(res, result);
+        } catch (error) {
+            // Handle "No pathology data found" as a success response (not an error)
+            if (error.message === 'No pathology data found for this case number') {
+                return ApiResponse.success(res, { 
+                    message: 'No pathology data found for this case number',
+                    found: false 
+                });
+            }
+            return ApiResponse.error(res, error.message, 400);
+        }
     })
 );
 
@@ -1549,11 +1682,29 @@ router.get('/appointments/:id/pathology/exists',
 // Generate TPA PDF for completed appointment (MTRF > Photos > MER > Patho > Cardio > Radio > Other)
 router.get('/appointments/:id/tpa-pdf',
     verifyToken,
-    requirePermission('appointments.view'),
+    requireAnyPermission(['appointments.view', 'appointments.lifecycle']),
     asyncHandler(async (req, res) => {
         const appointmentId = parseInt(req.params.id);
         const result = await service.generateTPAPDF(appointmentId);
-        return ApiResponse.success(res, result);
+        
+        if (!result || !result.pdfPath) {
+            return ApiResponse.notFound(res, 'TPA PDF not found');
+        }
+
+        // Send the actual PDF file
+        const fs = require('fs');
+        const path = require('path');
+        
+        // Get absolute path
+        const absolutePath = path.resolve(result.pdfPath);
+        
+        if (!fs.existsSync(absolutePath)) {
+            return ApiResponse.notFound(res, 'TPA PDF file not found');
+        }
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="TPA_${appointmentId}.pdf"`);
+        return res.sendFile(absolutePath);
     })
 );
 
@@ -1568,19 +1719,50 @@ router.get('/appointments/:id/master-pdf',
     })
 );
 
+// Generate and serve appointment summary PDF
+router.get('/appointments/:id/summary-pdf',
+    verifyToken,
+    requireAnyPermission(['appointments.view', 'appointments.lifecycle']),
+    asyncHandler(async (req, res) => {
+        const appointmentId = parseInt(req.params.id);
+        const pdfBuffer = await service.generateAppointmentSummaryPDF(appointmentId);
+        
+        if (!pdfBuffer) {
+            return ApiResponse.error(res, 'Failed to generate appointment summary PDF', 500);
+        }
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="Appointment_Summary_${appointmentId}.pdf"`);
+        res.setHeader('Content-Length', pdfBuffer.length);
+        
+        return res.send(pdfBuffer);
+    })
+);
+
 // Send appointment PDF via email to client
 router.post('/appointments/:id/send-email',
     verifyToken,
     requirePermission('appointments.view'),
     asyncHandler(async (req, res) => {
         const appointmentId = parseInt(req.params.id);
-        const result = await service.sendAppointmentEmailToClient(appointmentId);
+        const result = await service.sendAppointmentEmailToClient(appointmentId, req.user.id);
         
         if (!result.success) {
             return ApiResponse.error(res, result.message, result.statusCode || 500);
         }
         
         return ApiResponse.success(res, result);
+    })
+);
+
+// Get TPA email statistics for QC page
+router.get('/appointments/qc/tpa-email-stats',
+    verifyToken,
+    requirePermission('appointments.view'),
+    asyncHandler(async (req, res) => {
+        const { getTpaEmailStats } = require('../services/s_tap_email_log');
+        const stats = await getTpaEmailStats();
+        return ApiResponse.success(res, 'TPA email statistics retrieved', stats);
     })
 );
 

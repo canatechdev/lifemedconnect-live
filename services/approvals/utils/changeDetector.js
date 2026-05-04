@@ -73,8 +73,28 @@ const areValuesEqual = (oldValue, newValue, key, context = {}) => {
         return Number(oldValue) === Number(newValue);
     }
     
-    // Date comparison
+    // Date comparison - handle datetime vs date properly
     if (key && key.toLowerCase().includes('date')) {
+        // Special handling for confirmed_date - check both date and time
+        if (key === 'confirmed_date') {
+            // If both values normalize to same date, check if there's actually a time difference
+            const oldDate = normalizeDate(oldValue);
+            const newDate = normalizeDate(newValue);
+            
+            if (oldDate === newDate) {
+                // Same date - check if there's a time component that changed
+                const oldTime = oldValue && oldValue.includes('T') ? oldValue.split('T')[1]?.slice(0, 8) : null;
+                const newTime = newValue && newValue.includes('T') ? newValue.split('T')[1]?.slice(0, 8) : null;
+                
+                // If old has time but new doesn't, or times are different, it's a change
+                if (oldTime && (!newTime || oldTime !== newTime)) {
+                    return false; // There IS a change
+                }
+            }
+            return oldDate === newDate;
+        }
+        
+        // Regular date comparison for other date fields
         return normalizeDate(oldValue) === normalizeDate(newValue);
     }
     
@@ -169,6 +189,7 @@ const getChangedFields = (oldData, newData) => {
     const changed = {};
     let hasChanges = false;
     
+        
     for (const key in newData) {
         if (shouldIgnoreField(key)) continue;
         

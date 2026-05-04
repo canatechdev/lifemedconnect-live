@@ -14,7 +14,7 @@ const { parsePaginationParams } = require('../lib/helpers');
 const { createWithApproval, updateWithApproval, deleteWithApproval, formatApprovalResponse } = require('../lib/approvalHelper');
 const { toMySqlDate } = require('../lib/normalizers');
 
-// ⭐ NEW: Import security middleware
+//  NEW: Import security middleware
 const { uploadLimiter } = require('../middleware/security');
 
 // Import validation schemas

@@ -18,27 +18,58 @@ const safe = (value) => {
  * Update appointment status based on test completion
  */
 async function updateAppointmentStatus(appointmentId) {
-    const [stats] = await db.query(`
-        SELECT 
-            COUNT(*) as total,
-            SUM(CASE WHEN is_completed = 1 THEN 1 ELSE 0 END) as completed
-        FROM appointment_tests 
-        WHERE appointment_id = ?
-    `, [appointmentId]);
+    const connection = await db.pool.getConnection();
+    try {
+        await connection.beginTransaction();
+        
+        // Get current status before update
+        const [current] = await connection.query(
+            'SELECT status, medical_status FROM appointments WHERE id = ?',
+            [appointmentId]
+        );
+        
+        const [stats] = await connection.query(`
+            SELECT 
+                COUNT(*) as total,
+                SUM(CASE WHEN is_completed = 1 THEN 1 ELSE 0 END) as completed
+            FROM appointment_tests 
+            WHERE appointment_id = ?
+        `, [appointmentId]);
 
-    const { total, completed } = stats;
-    let newStatus = 'pending';
+        const { total, completed } = stats;
+        let newStatus = 'pending';
 
-    if (completed === total && total > 0) {
-        newStatus = 'completed';
-    } else if (completed > 0) {
-        newStatus = 'partially_completed';
+        if (completed === total && total > 0) {
+            newStatus = 'completed';
+        } else if (completed > 0) {
+            newStatus = 'partially_completed';
+        }
+
+        await connection.query(
+            'UPDATE appointments SET status = ?, updated_at = NOW() WHERE id = ?',
+            [newStatus, appointmentId]
+        );
+        
+        // Log status history
+        const { logStatusHistory } = require('./AppointmentFlow');
+        await logStatusHistory(appointmentId, {
+            old_status: current[0]?.status || null,
+            new_status: newStatus,
+            old_medical_status: current[0]?.medical_status || null,
+            new_medical_status: current[0]?.medical_status || null,
+            changed_by: 1, // System update
+            change_type: 'auto_status_update',
+            remarks: `Status automatically updated based on test completion: ${completed}/${total} tests completed`,
+            metadata: { total_tests: total, completed_tests: completed }
+        }, connection);
+        
+        await connection.commit();
+    } catch (error) {
+        await connection.rollback();
+        throw error;
+    } finally {
+        connection.release();
     }
-
-    await db.query(
-        'UPDATE appointments SET status = ?, updated_at = NOW() WHERE id = ?',
-        [newStatus, appointmentId]
-    );
 }
 
 /**
@@ -213,23 +244,85 @@ async function createAppointment(row, connection = null) {
 /**
  * List appointments with pagination and search
  */
-async function listAppointments({ page = 1, limit = 0, search = '', sortBy = 'id', sortOrder = 'DESC', customerCategory = '' }) {
-    const searchColumns = ['case_number', 'application_number', 'customer_first_name', 'customer_last_name', 'customer_mobile'];
+async function listAppointments({ page = 1, limit = 0, search = '', sortBy = 'id', sortOrder = 'DESC', customerCategory = '', month = '', year = '', visitType = '', status = '', medicalStatus = '', qcStatus = '', userId = null, userRole = null }) {
+    const searchColumns = ['case_number', 'application_number', 'customer_first_name', 'customer_last_name', 'customer_mobile', 'home_center.center_name', 'other_center.center_name'];
     const searchParams = [];
     const conditions = [];
 
     if (search && search.trim() !== '') {
-        const searchConditions = searchColumns.map(col => `${col} LIKE ?`).join(' OR ');
+        const searchConditions = [
+            'appointments.case_number LIKE ?',
+            'appointments.application_number LIKE ?',
+            'appointments.customer_first_name LIKE ?',
+            'appointments.customer_last_name LIKE ?',
+            'appointments.customer_mobile LIKE ?',
+            'home_center.center_name LIKE ?',
+            'other_center.center_name LIKE ?'
+        ].join(' OR ');
         conditions.push(`(${searchConditions})`);
-        searchColumns.forEach(() => searchParams.push(`%${search}%`));
+        // Add search parameters for each condition
+        for (let i = 0; i < 7; i++) {
+            searchParams.push(`%${search}%`);
+        }
     }
 
-    if (customerCategory) {
-        conditions.push('customer_category = ?');
+    if (customerCategory && customerCategory !== '') {
+        conditions.push('appointments.customer_category = ?');
         searchParams.push(customerCategory);
     }
 
-    const whereClause = conditions.length > 0 ? ` WHERE (${conditions.join(') AND (')})` : '';
+    // Month/Year filtering - check only created_at field
+    if (month && month !== '' && year && year !== '') {
+        conditions.push('(MONTH(appointments.created_at) = ? AND YEAR(appointments.created_at) = ?)');
+        searchParams.push(parseInt(month), parseInt(year));
+    } else if (year && year !== '' && year !== 0) {
+        conditions.push('YEAR(appointments.created_at) = ?');
+        searchParams.push(parseInt(year));
+    }
+
+    // Additional filters
+    if (visitType && visitType !== '') {
+        conditions.push('appointments.visit_type = ?');
+        searchParams.push(visitType);
+    }
+
+    if (status && status !== '') {
+        conditions.push('appointments.status = ?');
+        searchParams.push(status);
+    }
+
+    if (medicalStatus && medicalStatus !== '') {
+        conditions.push('(appointments.medical_status = ? OR appointments.center_medical_status = ? OR appointments.home_medical_status = ?)');
+        searchParams.push(medicalStatus, medicalStatus, medicalStatus);
+    }
+
+    if (qcStatus && qcStatus !== '') {
+        conditions.push('appointments.qc_status = ?');
+        searchParams.push(qcStatus);
+    }
+
+    // TPA User Filtering: If user is TPA role, show only their assigned TPA's appointments
+    // Check both string role name and role_id for flexibility
+    const isTpaRole = userRole === 2 || (typeof userRole === 'string' && userRole.toLowerCase().includes('tpa'));
+    
+    if (userId && isTpaRole) {
+        conditions.push(`appointments.client_id IN (
+            SELECT c.id FROM clients c WHERE c.user_id = ?
+        )`);
+        searchParams.push(userId);
+        
+        logger.info('TPA user filtering applied', {
+            userId,
+            userRole,
+            filterType: 'TPA assignment'
+        });
+    }
+
+    // Always filter out deleted and pending approval appointments
+    conditions.push('appointments.is_deleted = 0');
+    conditions.push('appointments.has_pending_approval = 0');
+
+    const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
 
     const allowedSortColumns = [
         'id', 'case_number', 'application_number', 'customer_first_name',
@@ -239,22 +332,30 @@ async function listAppointments({ page = 1, limit = 0, search = '', sortBy = 'id
     const validSortBy = allowedSortColumns.includes(sortBy) ? sortBy : 'id';
     const validSortOrder = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
 
-    const countSql = `SELECT COUNT(*) as total FROM appointments${whereClause ? whereClause + ' AND' : ' WHERE'} is_deleted = 0 AND has_pending_approval=0`;
-    const countRows = await db.query(countSql, searchParams);
+    const countSql = `SELECT COUNT(*) as total FROM appointments LEFT JOIN diagnostic_centers home_center ON appointments.center_id = home_center.id LEFT JOIN diagnostic_centers other_center ON appointments.other_center_id = other_center.id${whereClause}`;
+    const [countRows] = await db.pool.query(countSql, searchParams);
     const total = countRows[0].total;
-
-    let dataSql = `SELECT * FROM appointments${whereClause ? whereClause + ' AND' : ' WHERE'} is_deleted = 0 AND has_pending_approval=0 ORDER BY ${validSortBy} ${validSortOrder}`;
-    const dataParams = [...searchParams];
 
     const numericLimit = Number(limit);
     const numericPage = Number(page);
-
+    
+    let sql = `SELECT 
+                appointments.*,
+                home_center.center_name as home_center_name,
+                other_center.center_name as other_center_name
+                FROM appointments 
+                LEFT JOIN diagnostic_centers home_center ON appointments.center_id = home_center.id
+                LEFT JOIN diagnostic_centers other_center ON appointments.other_center_id = other_center.id
+                ${whereClause} ORDER BY ${validSortBy} ${validSortOrder}`;
+    let dataParams = [...searchParams];
+    
     if (!isNaN(numericLimit) && numericLimit > 0) {
         const offset = (numericPage - 1) * numericLimit;
-        dataSql += ` LIMIT ${numericLimit} OFFSET ${offset}`;
+        sql += ` LIMIT ? OFFSET ?`;
+        dataParams.push(numericLimit, offset);
     }
 
-    const rows = await db.query(dataSql, dataParams);
+    const [rows] = await db.pool.query(sql, dataParams);
 
     return {
         data: rows,

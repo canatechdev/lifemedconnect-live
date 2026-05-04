@@ -96,7 +96,7 @@ async function confirmSchedule(appointmentId, confirmedDate, confirmedTime, user
         });
 
         const [current] = await connection.query(
-            'SELECT visit_type, medical_status, center_confirmed_at, home_confirmed_at, center_medical_status, home_medical_status FROM appointments WHERE id = ?',
+            'SELECT visit_type, medical_status, center_confirmed_at, home_confirmed_at, center_medical_status, home_medical_status, center_id, other_center_id FROM appointments WHERE id = ?',
             [appointmentId]
         );
 
@@ -109,9 +109,73 @@ async function confirmSchedule(appointmentId, confirmedDate, confirmedTime, user
 
         // For Both appointments with actorContext, update per-side fields
         if (visitType === 'Both' && actorContext) {
-            const side = actorContext.type; // 'center' or 'technician'
+            // Determine which side to update based on actor's center affiliation
+            let side = 'center'; // default to center side
+            
+            // SAFETY CHECK: Verify user's actual center affiliation and override incorrect context
+            let actualCenterId = null;
+            if (actorContext.centerId) {
+                actualCenterId = actorContext.centerId;
+            } else if (actorContext.technicianId) {
+                // Look up technician's assigned center
+                try {
+                    const [techRows] = await connection.query(
+                        'SELECT center_id FROM technicians WHERE id = ?',
+                        [actorContext.technicianId]
+                    );
+                    if (techRows && techRows[0]) {
+                        actualCenterId = techRows[0].center_id;
+                    }
+                } catch (e) {
+                    // If lookup fails, default to home side for safety
+                    side = 'home';
+                }
+            }
+            
+            // Additional safety: Check if user actually belongs to the center they claim
+            if (actualCenterId && userId) {
+                try {
+                    const [userRows] = await connection.query(
+                        'SELECT center_id, diagnostic_center_id FROM users WHERE id = ?',
+                        [userId]
+                    );
+                    if (userRows && userRows[0]) {
+                        const userCenterId = userRows[0].center_id || userRows[0].diagnostic_center_id;
+                        // Override if frontend sent wrong centerId
+                        if (userCenterId && userCenterId !== actualCenterId) {
+                            logger.warn('Frontend sent incorrect centerId, overriding with user actual center', {
+                                appointmentId,
+                                frontendCenterId: actualCenterId,
+                                userActualCenterId: userCenterId,
+                                userId
+                            });
+                            actualCenterId = userCenterId;
+                        }
+                    }
+                } catch (e) {
+                    // If lookup fails, continue with provided context
+                }
+            }
+            
+            if (actualCenterId) {
+                // If actor has centerId, check if it matches appointment's center or other_center
+                if (actualCenterId === currentRow.center_id) {
+                    side = 'center';
+                } else if (actualCenterId === currentRow.other_center_id) {
+                    side = 'home';
+                }
+            }
+            
             const updateFields = [];
             const updateValues = [];
+            
+            logger.info('confirmSchedule for Both appointment', {
+                appointmentId,
+                side,
+                actorContext,
+                appointmentCenterId: currentRow.center_id,
+                appointmentOtherCenterId: currentRow.other_center_id
+            });
 
             if (side === 'center') {
                 updateFields.push('center_confirmed_at = ?');
@@ -127,7 +191,7 @@ async function confirmSchedule(appointmentId, confirmedDate, confirmedTime, user
 
             // Check if both sides have now confirmed
             const centerConfirmed = side === 'center' ? true : !!currentRow.center_confirmed_at;
-            const homeConfirmed = side === 'technician' ? true : !!currentRow.home_confirmed_at;
+            const homeConfirmed = side === 'home' ? true : !!currentRow.home_confirmed_at;
 
             if (centerConfirmed && homeConfirmed) {
                 updateFields.push('status = ?');
@@ -161,8 +225,10 @@ async function confirmSchedule(appointmentId, confirmedDate, confirmedTime, user
         }
 
         await logStatusHistory(appointmentId, {
+            old_status: currentRow?.status || null,
+            new_status: visitType === 'Both' && actorContext ? currentRow?.status || null : 'pending',
             old_medical_status: currentRow?.medical_status || null,
-            new_medical_status: visitType === 'Both' && actorContext ? null : 'scheduled',
+            new_medical_status: 'scheduled',
             changed_by: userId,
             change_type: 'schedule_confirm',
             remarks: visitType === 'Both' && actorContext 
@@ -210,7 +276,7 @@ async function rescheduleAppointment(appointmentId, newConfirmedDate, newConfirm
         });
 
         const [current] = await connection.query(
-            'SELECT visit_type, confirmed_date, confirmed_time, medical_status, center_confirmed_at, home_confirmed_at, center_medical_status, home_medical_status FROM appointments WHERE id = ? FOR UPDATE',
+            'SELECT visit_type, confirmed_date, confirmed_time, medical_status, center_confirmed_at, home_confirmed_at, center_medical_status, home_medical_status, center_id, other_center_id FROM appointments WHERE id = ? FOR UPDATE',
             [appointmentId]
         );
 
@@ -224,11 +290,49 @@ async function rescheduleAppointment(appointmentId, newConfirmedDate, newConfirm
 
         // For Both appointments with actorContext, update per-side fields
         if (visitType === 'Both' && actorContext) {
-            const side = actorContext.type; // 'center' or 'technician'
+            // Determine which side to update based on actor's center affiliation
+            let side = 'center'; // default to center side
+            
+            if (actorContext.centerId) {
+                // If actor has centerId, check if it matches appointment's center or other_center
+                if (actorContext.centerId === currentRow.center_id) {
+                    side = 'center';
+                } else if (actorContext.centerId === currentRow.other_center_id) {
+                    side = 'home';
+                }
+            } else if (actorContext.technicianId) {
+                // Look up technician's assigned center
+                try {
+                    const [techRows] = await connection.query(
+                        'SELECT center_id FROM technicians WHERE id = ?',
+                        [actorContext.technicianId]
+                    );
+                    if (techRows && techRows[0]) {
+                        const techCenterId = techRows[0].center_id;
+                        if (techCenterId === currentRow.center_id) {
+                            side = 'center';
+                        } else if (techCenterId === currentRow.other_center_id) {
+                            side = 'home';
+                        }
+                    }
+                } catch (e) {
+                    // If lookup fails, default to home side for safety
+                    side = 'home';
+                }
+            }
+            
             const updateFields = [];
             const updateValues = [];
             
             const newDateTime = new Date(`${newConfirmedDate} ${newConfirmedTime}`);
+
+            logger.info('rescheduleAppointment for Both appointment', {
+                appointmentId,
+                side,
+                actorContext,
+                appointmentCenterId: currentRow.center_id,
+                appointmentOtherCenterId: currentRow.other_center_id
+            });
 
             if (side === 'center') {
                 updateFields.push('center_confirmed_at = ?');
@@ -236,14 +340,14 @@ async function rescheduleAppointment(appointmentId, newConfirmedDate, newConfirm
                 updateFields.push('center_medical_status = ?');
                 updateValues.push('rescheduled');
                 updateFields.push('center_reschedule_remark = ?');
-                updateValues.push(remarks || 'Center visit rescheduled');
+                updateValues.push(remarks || null);
             } else {
                 updateFields.push('home_confirmed_at = ?');
                 updateValues.push(newDateTime);
                 updateFields.push('home_medical_status = ?');
                 updateValues.push('rescheduled');
                 updateFields.push('home_reschedule_remark = ?');
-                updateValues.push(remarks || 'Home visit rescheduled');
+                updateValues.push(remarks || null);
             }
 
             updateFields.push('updated_at = NOW()');
@@ -257,6 +361,8 @@ async function rescheduleAppointment(appointmentId, newConfirmedDate, newConfirm
             );
 
             await logStatusHistory(appointmentId, {
+                old_status: currentRow.status || null,
+                new_status: currentRow.status || null,
                 old_medical_status: side === 'center' ? currentRow.center_medical_status : currentRow.home_medical_status,
                 new_medical_status: 'rescheduled',
                 changed_by: userId,
@@ -292,13 +398,16 @@ async function rescheduleAppointment(appointmentId, newConfirmedDate, newConfirm
                      confirmed_date = ?,
                      confirmed_time = ?,
                      medical_status = 'rescheduled',
+                     reschedule_remark = ?,
                      updated_at = NOW(),
                      updated_by = ?
                  WHERE id = ?`,
-                [newConfirmedDate, newConfirmedTime, userId, appointmentId]
+                [newConfirmedDate, newConfirmedTime, remarks || null, userId, appointmentId]
             );
 
             await logStatusHistory(appointmentId, {
+                old_status: currentRow.status || null,
+                new_status: currentRow.status || null,
                 old_medical_status: currentRow.medical_status,
                 new_medical_status: 'rescheduled',
                 changed_by: userId,
@@ -346,7 +455,7 @@ async function pushBackAppointment(appointmentId, remarks, userId, actorContext 
             actorContext
         });
 
-        const [current] = await connection.query('SELECT id, pushed_back, visit_type, center_pushed_back, home_pushed_back, medical_status FROM appointments WHERE id = ?', [appointmentId]);
+        const [current] = await connection.query('SELECT id, status, pushed_back, visit_type, center_pushed_back, home_pushed_back, medical_status FROM appointments WHERE id = ?', [appointmentId]);
 
         if (!current || current.length === 0) {
             throw new Error('Appointment not found');
@@ -407,6 +516,8 @@ async function pushBackAppointment(appointmentId, remarks, userId, actorContext 
         await connection.query(`INSERT INTO appointment_pushback_history (appointment_id, pushed_back_by, remarks) VALUES (?, ?, ?)`, [appointmentId, userId, remarks]);
 
         await logStatusHistory(appointmentId, {
+            old_status: current[0].status || null,
+            new_status: 'pushed_back',
             old_medical_status: current[0].medical_status,
             new_medical_status: 'pushed_back',
             changed_by: userId,
@@ -446,7 +557,7 @@ async function restoreAppointment(appointmentId, userId) {
             userId
         });
 
-        const [appointment] = await connection.query('SELECT status FROM appointments WHERE id = ? FOR UPDATE', [appointmentId]);
+        const [appointment] = await connection.query('SELECT status, medical_status FROM appointments WHERE id = ? FOR UPDATE', [appointmentId]);
 
         if (!appointment || appointment.length === 0) {
             throw new Error('Appointment not found');
@@ -458,9 +569,48 @@ async function restoreAppointment(appointmentId, userId) {
 
         logDBState('BEFORE_RESTORE', appointmentId, appointment[0]);
 
+        // Get the original status before push back from status history
+        const [statusHistory] = await connection.query(`
+            SELECT old_status 
+            FROM appointment_status_history 
+            WHERE appointment_id = ? AND change_type = 'push_back' 
+            ORDER BY created_at DESC 
+            LIMIT 1
+        `, [appointmentId]);
+
+        // Debug logging
+        logger.info('Restore Status History Query:', {
+            appointmentId,
+            historyFound: statusHistory.length,
+            historyData: statusHistory
+        });
+
+        let originalStatus = 'pending'; // Default fallback
+        
+        if (statusHistory.length > 0 && statusHistory[0].old_status) {
+            originalStatus = statusHistory[0].old_status;
+        } else {
+            // Try to find any status history record for this appointment
+            const [anyHistory] = await connection.query(`
+                SELECT old_status 
+                FROM appointment_status_history 
+                WHERE appointment_id = ? AND old_status IS NOT NULL AND old_status != 'pushed_back'
+                ORDER BY created_at DESC 
+                LIMIT 1
+            `, [appointmentId]);
+            
+            if (anyHistory.length > 0 && anyHistory[0].old_status) {
+                originalStatus = anyHistory[0].old_status;
+                logger.info('Using fallback status from any history record:', originalStatus);
+            } else {
+                logger.warn('No status history found, using default pending status');
+            }
+        }
+
         await connection.query(`
             UPDATE appointments 
             SET 
+                status = ?,
                 pushed_back = 0,
                 pushback_remarks = NULL,
                 pushed_back_by = NULL,
@@ -468,16 +618,16 @@ async function restoreAppointment(appointmentId, userId) {
                 updated_at = NOW(),
                 updated_by = ?
             WHERE id = ?
-        `, [userId, appointmentId]);
+        `, [originalStatus, userId, appointmentId]);
 
         await logStatusHistory(appointmentId, {
             old_status: 'pushed_back',
-            new_status: 'scheduled',
+            new_status: originalStatus,
             old_medical_status: appointment[0].medical_status,
-            new_medical_status: 'scheduled',
+            new_medical_status: appointment[0].medical_status, // Keep current medical status
             changed_by: userId,
             change_type: 'restore_appointment',
-            metadata: { remarks: 'Appointment restored from pushed_back' }
+            metadata: { remarks: 'Appointment restored from pushed_back to original status' }
         }, connection);
 
         await connection.commit();
@@ -574,6 +724,29 @@ async function updateMedicalStatus(appointmentId, newStatus, additionalData, use
                 throw new Error('Both appointments require actorContext (center or technician) to update medical status. Cannot determine which side to update.');
             }
             
+            // Validate center ownership for Both appointments
+            if (actorContext && actorContext.centerId) {
+                const [centerCheck] = await connection.query(
+                    'SELECT center_id, other_center_id FROM appointments WHERE id = ?',
+                    [appointmentId]
+                );
+                
+                if (centerCheck.length > 0) {
+                    const { center_id, other_center_id } = centerCheck[0];
+                    if (actorContext.centerId !== center_id && actorContext.centerId !== other_center_id) {
+                        throw new Error('Center can only update appointments assigned to them');
+                    }
+                    
+                    // Ensure center is updating the correct side
+                    if (actorContext.type === 'center' && actorContext.centerId !== center_id) {
+                        throw new Error('Center can only update center side of Both appointments');
+                    }
+                    if (actorContext.type === 'technician' && actorContext.centerId !== other_center_id) {
+                        throw new Error('Center can only update home side of Both appointments when assigned as technician');
+                    }
+                }
+            }
+            
             // Update per-side status
             const side = actorContext.type; // 'center' or 'technician'
             const statusField = side === 'center' ? 'center_medical_status' : 'home_medical_status';
@@ -607,6 +780,29 @@ async function updateMedicalStatus(appointmentId, newStatus, additionalData, use
             
         } else {
             // Simple flow: center/home only
+            
+            // Validate center ownership for simple flow appointments
+            if (actorContext && actorContext.centerId) {
+                const [centerCheck] = await connection.query(
+                    'SELECT center_id, other_center_id, visit_type FROM appointments WHERE id = ?',
+                    [appointmentId]
+                );
+                
+                if (centerCheck.length > 0) {
+                    const { center_id, other_center_id, visit_type } = centerCheck[0];
+                    
+                    // For Center_Visit, center must match center_id
+                    if (visit_type === 'Center_Visit' && actorContext.centerId !== center_id) {
+                        throw new Error('Center can only update their own Center Visit appointments');
+                    }
+                    
+                    // For Home_Visit, center must match other_center_id
+                    if (visit_type === 'Home_Visit' && actorContext.centerId !== other_center_id) {
+                        throw new Error('Center can only update their own Home Visit appointments');
+                    }
+                }
+            }
+            
             if (newStatus === 'arrived') {
                 finalMainStatus = 'checked_in';
                 finalMedicalStatus = 'arrived';
@@ -891,6 +1087,12 @@ async function bulkMarkTestsCompleted(appointmentId, testIds, updatedBy, remarks
         );
 
         if (allTests[0] && allTests[0].total === allTests[0].completed) {
+            // Get current status before update
+            const [current] = await connection.execute(
+                'SELECT status, medical_status FROM appointments WHERE id = ?',
+                [appointmentId]
+            );
+            
             await connection.execute(
                 `UPDATE appointments 
                  SET status = 'Completed', 
@@ -899,6 +1101,18 @@ async function bulkMarkTestsCompleted(appointmentId, testIds, updatedBy, remarks
                  WHERE id = ?`,
                 [appointmentId]
             );
+            
+            // Log status history
+            await logStatusHistory(appointmentId, {
+                old_status: current[0]?.status || null,
+                new_status: 'Completed',
+                old_medical_status: current[0]?.medical_status || null,
+                new_medical_status: 'Completed',
+                changed_by: updatedBy,
+                change_type: 'bulk_complete',
+                remarks: `All ${testIds.length} tests marked as completed`,
+                metadata: { test_ids: testIds }
+            }, connection);
         }
 
         await connection.commit();
@@ -973,37 +1187,61 @@ async function completeAppointment(appointmentId, userId) {
  * Update test assignments
  */
 async function updateAppointmentTestAssignments(appointmentId, testUpdates, updatedBy) {
+    console.log('updateAppointmentTestAssignments called:', { appointmentId, testUpdates, updatedBy });
     const connection = await db.pool.getConnection();
     try {
         await connection.beginTransaction();
 
         for (const update of testUpdates) {
+            console.log('Processing test update:', update);
             const fields = [];
             const values = [];
 
+            // Handle center assignment
             if (update.assigned_center_id !== undefined) {
+                console.log('Adding assigned_center_id:', update.assigned_center_id);
                 fields.push('assigned_center_id = ?');
                 values.push(update.assigned_center_id);
             }
-            if (update.assigned_technician_id !== undefined) {
+
+            // Handle technician assignment with business logic
+            if (update.visit_subtype === 'center') {
+                // Always clear technician for center visits
+                console.log('Clearing technician for center visit');
+                fields.push('assigned_technician_id = ?');
+                values.push(null);
+            } else if (update.assigned_technician_id !== undefined) {
+                // Only set technician for non-center visits
+                console.log('Adding assigned_technician_id:', update.assigned_technician_id);
                 fields.push('assigned_technician_id = ?');
                 values.push(update.assigned_technician_id);
             }
+
+            // Handle visit subtype
             if (update.visit_subtype !== undefined) {
+                console.log('Adding visit_subtype:', update.visit_subtype);
                 fields.push('visit_subtype = ?');
                 values.push(update.visit_subtype);
             }
 
             if (fields.length > 0) {
                 fields.push('updated_at = NOW()');
-                values.push(update.test_id, appointmentId);
+                // Use testId (now correctly pointing to appointment_test_id)
+                const testId = update.testId || update.test_id;
+                values.push(testId, appointmentId);
 
-                await connection.query(
-                    `UPDATE appointment_tests 
-                     SET ${fields.join(', ')} 
-                     WHERE id = ? AND appointment_id = ?`,
-                    values
-                );
+                const sql = `UPDATE appointment_tests 
+                             SET ${fields.join(', ')} 
+                             WHERE id = ? AND appointment_id = ?`;
+                
+                console.log('Executing SQL:', sql);
+                console.log('SQL Values:', values);
+                
+                const result = await connection.query(sql, values);
+                console.log('SQL Result:', result);
+                console.log('Update completed for test ID:', testId, 'affected rows:', result[0]?.affectedRows);
+            } else {
+                console.log('No fields to update for test:', update);
             }
         }
 

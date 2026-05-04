@@ -148,7 +148,14 @@ class AppointmentMasterPDFService {
                 const bytes = await fs.readFile(absPath);
                 const ext = path.extname(absPath).toLowerCase();
                 let embedded;
-                if (ext === '.png') {
+                if (ext === '.pdf') {
+                    // Merge PDF directly
+                    const pdfBytes = await fs.readFile(absPath);
+                    const imagePdf = await PDFDocument.load(pdfBytes);
+                    const pages = await masterPdf.copyPages(imagePdf, imagePdf.getPageIndices());
+                    pages.forEach(page => masterPdf.addPage(page));
+                    continue; // Skip the rest for PDFs as they're already merged
+                } else if (ext === '.png') {
                     embedded = await masterPdf.embedPng(bytes);
                 } else {
                     embedded = await masterPdf.embedJpg(bytes);
@@ -219,7 +226,7 @@ class AppointmentMasterPDFService {
         const imagesSection = this.generateImagesSection(data.images, baseUrl);
         const medicalFilesSection = this.generateMedicalFilesSection(data.medicalFiles, baseUrl);
         const reportsSection = this.generateReportsSection(data.reports, baseUrl);
-        const pathologySection = this.generatePathologySection(data.pathologyData);
+        const pathologySection = this.generatePathologySection(data.pathologyData, data.reports, data);
 
         return `
             <div class="master-report-title">
@@ -244,6 +251,10 @@ class AppointmentMasterPDFService {
      * Get master report specific styles
      */
     getMasterStyles() {
+        // Import pathology styles to ensure exact same styling as standalone PDF
+        const { getPathologyStyles } = require('./AppointmentPathology');
+        const pathologyStyles = getPathologyStyles();
+        
         return `
             .master-report-title {
                 text-align: center;
@@ -261,6 +272,9 @@ class AppointmentMasterPDFService {
                 letter-spacing: 1px;
                 margin: 0;
             }
+            
+            /* Include exact pathology styles from standalone PDF */
+            ${pathologyStyles}
             
             .section {
                 margin-bottom: 12pt;
@@ -575,32 +589,26 @@ class AppointmentMasterPDFService {
         return html;
     }
 
-    generatePathologySection(pathologyData) {
+    generatePathologySection(pathologyData, reports = [], appointmentData = null) {
         if (!pathologyData || !pathologyData.data || !Array.isArray(pathologyData.data) || pathologyData.data.length === 0) {
             return '';
         }
-        const grouped = this.groupPathologyData(pathologyData.data);
-        let html = `<div class="section"><div class="section-header">Pathology Report (${pathologyData.data.length} parameters) - Generated: ${new Date(pathologyData.fetched_at).toLocaleString('en-IN')}</div>`;
-        Object.keys(grouped).sort().forEach(deptName => {
-            html += `<div class="department"><div class="department-header">${deptName}</div>`;
-            Object.keys(grouped[deptName]).sort().forEach(testName => {
-                const parameters = grouped[deptName][testName];
-                html += `<div class="pathology-test-section"><div class="pathology-test-header">${testName}</div><table><thead><tr><th style="width: 35%;">Parameter</th><th style="width: 20%;">Result</th><th style="width: 15%;">Unit</th><th style="width: 30%;">Normal Range</th></tr></thead><tbody>`;
-                parameters.forEach(param => {
-                    const abnormal = this.isAbnormal(param.Result, param.NormalRange);
-                    const rowClass = abnormal ? 'abnormal' : '';
-                    const marker = abnormal ? '<span class="abnormal-marker">ABNORMAL</span>' : '';
-                    html += `<tr class="${rowClass}"><td><strong>${param.ParameterName || 'N/A'}</strong></td><td><strong>${param.Result || 'N/A'}</strong>${marker}</td><td>${param.Unit || '-'}</td><td>${param.NormalRange || '-'}</td></tr>`;
-                });
-                html += `</tbody></table></div>`;
-            });
-            html += `</div>`;
-        });
-        if (pathologyData.pdf_path) {
-            // html += `<div style="margin-top: 10px; padding: 10px; background: #e7f3ff; border-left: 3px solid #0066cc;"><strong>Detailed Pathology PDF:</strong> ${pathologyData.pdf_path}</div>`;
-        }
-        html += `</div>`;
-        return html;
+        
+        // Import the pathology content generator to use exact same logic as standalone PDF
+        const { generatePathologyContent } = require('./AppointmentPathology');
+        
+        // Use exact same appointment data structure as standalone pathology PDF
+        const appointmentInfo = {
+            customer_first_name: appointmentData?.customer_first_name || '',
+            customer_last_name: appointmentData?.customer_last_name || '',
+            case_number: appointmentData?.case_number || ''
+        };
+        
+        // Generate pathology content using exact same function as standalone PDF
+        const { content, patientInfoHeaderHtml } = generatePathologyContent(pathologyData.data, appointmentInfo);
+        
+        // Return the exact same pathology content as standalone PDF - no modifications
+        return content;
     }
 
     async generatePDFFromHTML(htmlContent, headerDataUrl, footerDataUrl) {

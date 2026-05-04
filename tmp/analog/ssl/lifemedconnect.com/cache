@@ -1,0 +1,84 @@
+CACHE type 5 produced by analog 6.0/Unix. Do not modify or delete!
+T	0	0	0	0	0	50	0
+D	29564283	29565615
+1	0	0	0	24	0	0	29565615	0	0	29562836	0	/
+1	0	0	0	1	0	0	29564488	0	0	29564488	0	/.env
+1	0	0	0	1	0	0	29564283	0	0	29564283	0	/?103.177.253.197
+1	0	0	0	3	0	0	29564738	0	0	29562840	0	/favicon.ico
+1	0	0	0	11	0	0	29565615	0	0	29563443	0	/robots.txt
+1	0	0	0	9	0	0	29565299	0	0	29562970	0	/xmlrpc.php
+1	0	0	0	1	0	0	29564738	0	0	29564738	0	/favicon.png
+3	0	0	0	3	0	0	29565162	0	0	29563144	0	https://lifemedconnect.com/
+3	0	0	0	1	0	0	29563447	0	0	29563447	0	https://www.lifemedconnect.com/
+4	0	0	0	1	0	0	29563947	0	0	29563947	0	Mozilla/5.0 (X11; Ubuntu; Linux x86_64; x86) AppleWebKit/537.36 (KHTML, like Gecko) Edge/96.0.0.0 Safari/537.36
+4	0	0	0	3	0	0	29564738	0	0	29564738	0	okhttp/5.3.0
+4	0	0	0	1	0	0	29563050	0	0	29563050	0	Mozilla/5.0 (compatible; InternetMeasurement/1.0; +https://internet-measurement.com/)
+4	0	0	0	1	0	0	29565299	0	0	29565299	0	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7; x86) AppleWebKit/537.36 (KHTML, like Gecko) Firefox/93.0.0.0 Safari/537.36
+4	0	0	0	3	0	0	29565610	0	0	29564288	0	Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.3; +https://openai.com/gptbot)
+4	0	0	0	1	0	0	29563035	0	0	29563035	0	Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Amazonbot/0.1; +https://developer.amazon.com/support/amazonbot) Chrome/119.0.6045.214 Safari/537.36
+4	0	0	0	1	0	0	29564148	0	0	29564148	0	meta-externalagent/1.1 (+https://developers.facebook.com/docs/sharing/webmasters/crawler)
+4	0	0	0	1	0	0	29562892	0	0	29562892	0	Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)Chrome/74.0.3729.169 Safari/537.36
+4	0	0	0	2	0	0	29563925	0	0	29562836	0	visionheight.com/scan Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/126.0.0.0 Safari/537.36
+4	0	0	0	1	0	0	29564429	0	0	29564429	0	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7; arm64) AppleWebKit/537.36 (KHTML, like Gecko) Safari/12.0.0.0 Safari/537.36
+4	0	0	0	1	0	0	29565215	0	0	29565215	0	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.3
+4	0	0	0	1	0	0	29564807	0	0	29564807	0	Mozilla/5.0 (Linux; Android 10; x64) AppleWebKit/537.36 (KHTML, like Gecko) Safari/15.0.0.0 Safari/537.36
+4	0	0	0	2	0	0	29564283	0	0	29564283	0	Mozilla/5.0 (X11; Linux x86_64; rv:142.0) Gecko/20100101 Firefox/142.0
+4	0	0	0	1	0	0	29562839	0	0	29562839	0	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_2)
+4	0	0	0	3	0	0	29564998	0	0	29563234	0	Mozilla/5.0 (compatible; CensysInspect/1.1; +https://about.censys.io/)
+4	0	0	0	1	0	0	29563425	0	0	29563425	0	Mozilla/5.0 (Windows NT 10.0; x64) AppleWebKit/537.36 (KHTML, like Gecko) Safari/14.0.0.0 Safari/537.36
+4	0	0	0	1	0	0	29565492	0	0	29565492	0	Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)
+4	0	0	0	2	0	0	29565615	0	0	29565615	0	Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm) Chrome/116.0.1938.76 Safari/537.36
+4	0	0	0	1	0	0	29563938	0	0	29563938	0	Mozilla/5.0 (Linux; Android 10; x64) AppleWebKit/537.36 (KHTML, like Gecko) Firefox/99.0.0.0 Safari/537.36
+4	0	0	0	4	0	0	29564908	0	0	29563443	0	facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)
+4	0	0	0	6	0	0	29565610	0	0	29564288	0	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36; compatible; OAI-SearchBot/1.3; robots.txt; +https://openai.com/searchbot
+4	0	0	0	1	0	0	29563875	0	0	29563875	0	Mozilla/5.0 (Windows NT 6.3; arm64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/96.0.0.0 Safari/537.36
+4	0	0	0	1	0	0	29564488	0	0	29564488	0	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36
+4	0	0	0	1	0	0	29563144	0	0	29563144	0	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36
+4	0	0	0	1	0	0	29564152	0	0	29564152	0	Mozilla/5.0 (Linux; Android 10; x86) AppleWebKit/537.36 (KHTML, like Gecko) Opera/77.0.0.0 Safari/537.36
+4	0	0	0	1	0	0	29565162	0	0	29565162	0	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36
+4	0	0	0	1	0	0	29563447	0	0	29563447	0	Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36
+4	0	0	0	5	0	0	29565168	0	0	29562840	0	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36
+4	0	0	0	1	0	0	29562970	0	0	29562970	0	Mozilla/5.0 (Windows NT 6.2; x86) AppleWebKit/537.36 (KHTML, like Gecko) Opera/77.0.0.0 Safari/537.36
+5	0	0	0	1	0	0	29563443	0	0	29563443	0	173.252.82.5
+5	0	0	0	1	0	0	29563234	0	0	29563234	0	66.132.153.124
+5	0	0	0	1	0	0	29565449	0	0	29565449	0	74.7.175.154
+5	0	0	0	1	0	0	29565168	0	0	29565168	0	203.55.131.4
+5	0	0	0	1	0	0	29563627	0	0	29563627	0	194.164.107.6
+5	0	0	0	1	0	0	29563815	0	0	29563815	0	203.55.131.3
+5	0	0	0	2	0	0	29564283	0	0	29564283	0	159.203.21.44
+5	0	0	0	1	0	0	29564998	0	0	29564998	0	167.94.138.53
+5	0	0	0	1	0	0	29563356	0	0	29563356	0	199.45.155.95
+5	0	0	0	1	0	0	29565615	0	0	29565615	0	40.77.167.219
+5	0	0	0	2	0	0	29564148	0	0	29564148	0	69.171.230.115
+5	0	0	0	1	0	0	29563938	0	0	29563938	0	212.8.250.240
+5	0	0	0	2	0	0	29563447	0	0	29563144	0	34.55.131.57
+5	0	0	0	1	0	0	29564488	0	0	29564488	0	141.94.20.103
+5	0	0	0	1	0	0	29564148	0	0	29564148	0	57.141.14.45
+5	0	0	0	1	0	0	29562892	0	0	29562892	0	42.83.147.55
+5	0	0	0	1	0	0	29565215	0	0	29565215	0	192.46.184.73
+5	0	0	0	1	0	0	29562836	0	0	29562836	0	3.151.194.164
+5	0	0	0	1	0	0	29563425	0	0	29563425	0	82.26.105.99
+5	0	0	0	1	0	0	29564908	0	0	29564908	0	173.252.70.17
+5	0	0	0	1	0	0	29564807	0	0	29564807	0	186.235.174.175
+5	0	0	0	3	0	0	29564738	0	0	29564738	0	13.217.128.26
+5	0	0	0	1	0	0	29563035	0	0	29563035	0	44.208.193.63
+5	0	0	0	1	0	0	29565615	0	0	29565615	0	207.46.13.52
+5	0	0	0	1	0	0	29564152	0	0	29564152	0	103.177.253.197
+5	0	0	0	1	0	0	29562970	0	0	29562970	0	208.74.105.169
+5	0	0	0	1	0	0	29563947	0	0	29563947	0	143.105.173.115
+5	0	0	0	1	0	0	29563925	0	0	29563925	0	3.18.186.238
+5	0	0	0	1	0	0	29563050	0	0	29563050	0	87.236.176.158
+5	0	0	0	1	0	0	29565610	0	0	29565610	0	74.7.227.35
+5	0	0	0	1	0	0	29563875	0	0	29563875	0	90.218.22.154
+5	0	0	0	1	0	0	29564546	0	0	29564546	0	74.7.243.193
+5	0	0	0	1	0	0	29564429	0	0	29564429	0	49.37.102.66
+5	0	0	0	1	0	0	29565299	0	0	29565299	0	70.78.136.152
+5	0	0	0	1	0	0	29562839	0	0	29562839	0	94.247.172.129
+5	0	0	0	1	0	0	29564288	0	0	29564288	0	74.7.242.15
+5	0	0	0	2	0	0	29565610	0	0	29564717	0	74.7.230.33
+5	0	0	0	1	0	0	29565162	0	0	29565162	0	34.123.240.249
+5	0	0	0	1	0	0	29564288	0	0	29564288	0	74.7.241.180
+5	0	0	0	2	0	0	29565522	0	0	29564546	0	74.7.244.24
+5	0	0	0	2	0	0	29562840	0	0	29562840	0	71.6.134.235
+5	0	0	0	1	0	0	29565492	0	0	29565492	0	49.37.113.55
+c	404	50	29565615

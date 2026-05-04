@@ -17,6 +17,7 @@ const AppointmentInvoice = require('./AppointmentInvoice');
 const AppointmentPathology = require('./AppointmentPathology');
 const AppointmentMasterPDF = require('./AppointmentMasterPDF');
 const AppointmentTPAPDF = require('./AppointmentComprehensivePDF');
+const AppointmentSummaryPDF = require('./AppointmentSummaryPDF');
 const AppointmentEmail = require('./AppointmentEmail');
 
 // Export all CRUD operations
@@ -69,7 +70,9 @@ const {
 // Export Excel operations
 const {
     generateTemplate,
-    processUploadedFile
+    processUploadedFile,
+    getAppointmentsForExport,
+    generateExportExcel
 } = AppointmentExcel;
 
 // Export Reports operations
@@ -165,6 +168,8 @@ module.exports = {
     // Excel Operations
     generateTemplate,
     processUploadedFile,
+    getAppointmentsForExport,
+    generateExportExcel,
 
     // Categorized Reports Operations
     uploadCategorizedReports,
@@ -205,6 +210,7 @@ module.exports = {
     // PDF Operations
     generateMasterPDF: AppointmentMasterPDF.generateMasterPDF,
     generateTPAPDF: AppointmentTPAPDF.generateTPAPDF,
+    generateAppointmentSummaryPDF: AppointmentSummaryPDF.generateAppointmentSummaryPDF,
 
     // Email Operations
     sendAppointmentEmailToClient: AppointmentEmail.sendAppointmentEmailToClient

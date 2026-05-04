@@ -445,7 +445,7 @@ class TestBulkService extends BaseService {
         return ApiResponse.error(res, 'No data found in the uploaded file', 400);
       }
 
-      const requiresApproval = needsApproval(req.user.role_id);
+      const requiresApproval = needsApproval(req.user.role_id, req.user.permissions);
       conn = await pool.pool.getConnection();
       await conn.beginTransaction();
 
@@ -454,6 +454,7 @@ class TestBulkService extends BaseService {
       const newApprovalRecords = [];
       const updatedOldRecords = [];
       const updatedNewRecords = [];
+      const errors = []; // Collect errors during processing
       
 
       for (const { values, rowNumber } of dataRows) {
@@ -590,7 +591,7 @@ class TestBulkService extends BaseService {
         requires_approval: requiresApproval && newRecords.length > 0
       };
 
-      const errors = []; // Placeholder for per-row error collection if needed
+      // errors array already declared above
 
       // Determine status based on errors and approval requirements
       let status = 'success';

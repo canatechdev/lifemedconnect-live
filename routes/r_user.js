@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Joi = require('joi');
+const db = require('../lib/dbconnection');
 const s_user = require('../services/s_user');
 const { generateToken, verifyToken, hashPassword } = require('../lib/auth');
 const { parsePaginationParams } = require('../lib/helpers');
@@ -21,14 +22,22 @@ const { getUserPermissions, requirePermission, hasPermission } = require('../lib
 
 // Joi schema for user registration
 const registerSchema = Joi.object({
-    username: Joi.string().min(3).max(30).required(),
+    username: Joi.string().min(3).max(30).optional(),
     mobile: Joi.string().pattern(/^[0-9]{10}$/).optional(),
     full_name: Joi.string().max(100).optional(),
     email: Joi.string().email().required(),
     password: Joi.string().min(4).required(),
     confirmPassword: Joi.string().min(4).optional(),
     role_id: Joi.number().integer().default(1) ,// 1=Admin, 2=TPA, 3=Center
-    is_active: Joi.number().integer().valid(1,0).optional()
+    is_active: Joi.number().integer().valid(1,0).optional(),
+    telephony_username: Joi.alternatives().try(
+        Joi.string().max(100).optional(),
+        Joi.string().allow('').optional()
+    ).optional().allow(null),
+    telephony_password: Joi.alternatives().try(
+        Joi.string().max(255).optional(),
+        Joi.string().allow('').optional()
+    ).optional().allow(null)
 });
 
 // Joi schema for user login
@@ -40,13 +49,21 @@ const loginSchema = Joi.object({
 
 // Joi schema for user update
 const updateSchema = Joi.object({
-    username: Joi.string().alphanum().min(3).max(30).optional(),
+    username: Joi.string().min(3).max(30).optional(),
     mobile: Joi.string().pattern(/^[0-9]{10}$/).optional(),
     full_name: Joi.string().max(100).optional(),
     email: Joi.string().email().optional(),
     password: Joi.string().min(4).optional(),
     role_id: Joi.number().integer().valid(1, 2, 3 ,4,5).optional(), 
-     is_active: Joi.number().integer().valid(1,0).optional()
+     is_active: Joi.number().integer().valid(1,0).optional(),
+    telephony_username: Joi.alternatives().try(
+        Joi.string().max(100).optional(),
+        Joi.string().allow('').optional()
+    ).optional().allow(null),
+    telephony_password: Joi.alternatives().try(
+        Joi.string().max(255).optional(),
+        Joi.string().allow('').optional()
+    ).optional().allow(null)
 });
 
 const changePasswordSchema = Joi.object({
@@ -61,17 +78,24 @@ const deleteUsersSchema = Joi.object({
 
 // POST /api/auth/register
 router.post('/auth/register', validateRequest(registerSchema), asyncHandler(async (req, res) => {
-    const { username, email, password, role_id, mobile, full_name } = req.body;
+    const { username, email, password, role_id, mobile, full_name, telephony_username, telephony_password } = req.body;
 
-    const existingUser = await s_user.getUserByUsername(username);
-    if (existingUser) {
-        return ApiResponse.conflict(res, 'User with this username already exists');
+    try {
+        const userId = await s_user.addUser(username, email, password, role_id, mobile, full_name, telephony_username, telephony_password);
+        logger.info('User registered', { userId, username });
+        
+        return ApiResponse.success(res, { userId }, 'User registered successfully', 201);
+    } catch (error) {
+        if (error.message === 'Username already exists') {
+            return ApiResponse.conflict(res, 'Username already exists');
+        }
+        if (error.message === 'Email already exists') {
+            return ApiResponse.conflict(res, 'Email already exists');
+        }
+        
+        logger.error('Registration error', { error: error.message, username, email });
+        return ApiResponse.error(res, 'Registration failed', 500);
     }
-
-    const userId = await s_user.addUser(username, email, password, role_id, mobile, full_name);
-    logger.info('User registered', { userId, username });
-    
-    return ApiResponse.success(res, { userId }, 'User registered successfully', 201);
 }));
 
 // POST /api/auth/login
@@ -114,6 +138,15 @@ router.post('/auth/login', loginLimiter, validateRequest(loginSchema), asyncHand
     // Continue with user authentication
     const user = await s_user.getUserByUsername(username);
     if (!user) {
+        // Check if user exists but is deleted/inactive for better error message
+        const deletedUser = await db.query('SELECT id, is_deleted, is_active FROM users WHERE username = ? LIMIT 1', [username]);
+        if (deletedUser.length > 0) {
+            if (deletedUser[0].is_deleted === 1) {
+                return ApiResponse.unauthorized(res, 'Account has been deleted');
+            } else if (deletedUser[0].is_active === 0) {
+                return ApiResponse.unauthorized(res, 'Account is inactive');
+            }
+        }
         return ApiResponse.unauthorized(res, 'Invalid credentials');
     }
 
@@ -178,10 +211,17 @@ router.post('/users/Add', verifyToken, requirePermission('users.create'), valida
    
    const { username, email, password, role_id, mobile, full_name } = req.body;
 
-    const existingUser = await s_user.getUserByUsername(username);
-    if (existingUser) {
-        return ApiResponse.conflict(res, 'User with this username already exists');
-    }
+    try {
+        // Check if user already exists (active users only)
+        const existingUser = await s_user.checkUserExists(username, email);
+        if (existingUser) {
+            if (existingUser.username === username) {
+                return ApiResponse.conflict(res, 'Username already exists');
+            }
+            if (existingUser.email === email) {
+                return ApiResponse.conflict(res, 'Email already exists');
+            }
+        }
 
     const result = await createWithApproval({
         entity_type: 'user',
@@ -201,19 +241,17 @@ router.post('/users/Add', verifyToken, requirePermission('users.create'), valida
 
     const response = formatApprovalResponse(result);
     return ApiResponse.success(res, response, response.message, 201);
-   
-   
-    // const { username, email, password, role_id, mobile, full_name } = req.body;
-
-    // const existingUser = await s_user.getUserByUsername(username);
-    // if (existingUser) {
-    //     return ApiResponse.conflict(res, 'User with this username already exists');
-    // }
-
-    // const userId = await s_user.addUser(username, email, password, role_id, mobile, full_name);
-    // logger.info('User added by admin', { userId, username, addedBy: req.user.id });
-    
-    // return ApiResponse.success(res, { userId }, 'User added successfully', 201);
+    } catch (error) {
+        if (error.message === 'Username already exists') {
+            return ApiResponse.conflict(res, 'Username already exists');
+        }
+        if (error.message === 'Email already exists') {
+            return ApiResponse.conflict(res, 'Email already exists');
+        }
+        
+        logger.error('User creation error', { error: error.message, username, email });
+        return ApiResponse.error(res, 'User creation failed', 500);
+    }
 }));
 
 
@@ -309,7 +347,7 @@ router.post('/users/delete', verifyToken, requirePermission('users.delete'), val
 
 
 // PUT /api/change-password/:id - Change user password
-// ⭐ NEW: Apply strict rate limiter (20 attempts per hour)
+// NEW: Apply strict rate limiter (20 attempts per hour)
 router.put('/change-password/:id', verifyToken, strictLimiter, validateRequest(changePasswordSchema), asyncHandler(async (req, res) => {
     const { new_password } = req.body;
     const targetUserId = parseInt(req.params.id, 10);

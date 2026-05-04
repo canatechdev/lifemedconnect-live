@@ -8,7 +8,7 @@ const logger = require('../lib/logger');
  */
 class TestCategoriesService extends BaseService {
     constructor() {
-        super('test_categories');
+        super('test_categories', 'id', ['category_name', 'description'], ['id', 'category_name', 'created_at'], { hasPendingApproval: true });
     }
 
     parseReportType(value) {

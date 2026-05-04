@@ -159,8 +159,8 @@ router.put('/test-rates/bulk-update', verifyToken, requirePermission('test_rates
         }, 'No changes detected. No approval needed.');
     }
     
-    // If Super Admin (role_id = 5), apply changes directly
-    if (!needsApproval(req.user.role_id)) {
+    // If user has approval permission, apply changes directly
+    if (!needsApproval(req.user.role_id, req.user.permissions)) {
         for (const clientId in changedByClient) {
             const group = changedByClient[clientId];
             for (let i = 0; i < group.ids.length; i++) {

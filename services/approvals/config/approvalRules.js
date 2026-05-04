@@ -4,11 +4,12 @@
  */
 
 /**
- * Roles that bypass approval (Super Admin)
- * Uses SUPER_ADMIN_ROLE_ID env (fallback 5)
+ * Legacy role-based approval bypass (deprecated)
+ * Now uses permission-based system with 'approvals.process' permission
+ * SUPER_ADMIN_ROLE_ID still used for backward compatibility
  */
 const SUPER_ADMIN_ROLE_ID = parseInt(process.env.SUPER_ADMIN_ROLE_ID || '5', 10);
-const BYPASS_APPROVAL_ROLES = [SUPER_ADMIN_ROLE_ID];
+const BYPASS_APPROVAL_ROLES = [SUPER_ADMIN_ROLE_ID]; // Deprecated - use permissions instead
 
 /**
  * Valid action types
@@ -47,12 +48,25 @@ const PRIORITY_LEVELS = {
 const DEFAULT_PRIORITY = PRIORITY_LEVELS.MEDIUM;
 
 /**
- * Check if user role bypasses approval
+ * Check if user needs approval for their actions
+ * Users with 'approvals.process' permission or Super Admin role bypass approval workflow
  * @param {number} roleId - User's role ID
+ * @param {Array} permissions - User's permissions array
  * @returns {boolean}
  */
-const needsApproval = (roleId) => {
-    return roleId !== SUPER_ADMIN_ROLE_ID;
+const needsApproval = (roleId, permissions = []) => {
+    // Super Admin bypasses approval
+    if (roleId === SUPER_ADMIN_ROLE_ID) {
+        return false;
+    }
+    
+    // Users with approvals.process permission also bypass approval
+    if (permissions && permissions.includes('approvals.process')) {
+        return false;
+    }
+    
+    // All other users go through approval workflow
+    return true;
 };
 
 /**

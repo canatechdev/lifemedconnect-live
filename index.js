@@ -4,6 +4,7 @@ const http = require('http');
 const path = require('path');
 const cors = require('cors');
 const compression = require('compression');
+const { Server: SocketIOServer } = require('socket.io');
 
 // Import utilities and middleware
 const { validateEnv, getConfig } = require('./lib/config');
@@ -54,7 +55,51 @@ testConnection()
 
 const config = getConfig();
 const app = express();
+
+// Trust proxy for Nginx/Apache reverse proxy
+app.set('trust proxy', 1);
+
 const server = http.createServer(app);
+
+// Initialize Socket.IO for real-time communication
+const io = new SocketIOServer(server, {
+    cors: {
+        origin: config.corsOrigin,
+        methods: ['GET', 'POST'],
+        credentials: true
+    },
+    path: '/socket.io'
+});
+
+// Socket.IO connection handling
+io.on('connection', (socket) => {
+    logger.debug('Client connected to Socket.IO', { socketId: socket.id });
+
+    // Join call-specific rooms
+    socket.on('join_call', (callId) => {
+        socket.join(`call_${callId}`);
+        logger.debug('Client joined call room', { socketId: socket.id, callId });
+    });
+
+    // Leave call room
+    socket.on('leave_call', (callId) => {
+        socket.leave(`call_${callId}`);
+        logger.debug('Client left call room', { socketId: socket.id, callId });
+    });
+
+    // Subscribe to customer number for incoming call alerts
+    socket.on('subscribe_customer', (customerNumber) => {
+        socket.join(`customer_${customerNumber}`);
+        logger.debug('Client subscribed to customer', { socketId: socket.id, customerNumber });
+    });
+
+    socket.on('disconnect', () => {
+        logger.debug('Client disconnected from Socket.IO', { socketId: socket.id });
+    });
+});
+
+// Make io accessible to routes
+app.set('io', io);
 
 //  SECURITY MIDDLEWARE - ORDER MATTERS!
 // 1. Helmet (must be first) - Secure HTTP headers
@@ -85,7 +130,7 @@ app.use(sanitizeInput);
 app.use(requestLogger);
 
 // 8.  NEW: Rate limiting for all API routes
-app.use('/api/', apiLimiter);
+// app.use('/api/', apiLimiter);
 
 // Static files
 // Serve uploaded files
@@ -138,6 +183,7 @@ const appDashboardRoutes = require('./routes/app/r_app_dashboard');
 const rbacRoutes = require('./routes/r_rbac');
 const telephonyRoutes = require('./routes/r_telephony');
 const smartReportRoutes = require('./routes/r_smart_reports');
+const appointmentLifecycleRoutes = require('./routes/r_appointment_lifecycle');
 
 // Health check route
 app.get('/', (req, res) => {
@@ -197,6 +243,7 @@ app.use('/api',dashboard)
 app.use('/api', rbacRoutes);
 app.use('/api/telephony', telephonyRoutes);
 app.use('/api/smart-reports', smartReportRoutes);
+app.use('/api/appointment-lifecycle', appointmentLifecycleRoutes);
 // App (mobile) routes (no CSRF)
 app.use('/api/app', appAuthRoutes);
 app.use('/api/app', appAppointmentRoutes);
@@ -239,6 +286,16 @@ const gracefulShutdown = async () => {
         logger.info('HTTP server closed');
 
         try {
+            // Close SparkTG WebSocket connection
+            const sparkTGSocketService = require('./services/telephony/SparkTGSocketService');
+            sparkTGSocketService.disconnect();
+            
+            // Close Socket.IO server
+            if (io) {
+                io.close();
+                logger.info('Socket.IO server closed');
+            }
+            
             await closePool();
             logger.info('Database connections closed');
             process.exit(0);
@@ -277,6 +334,15 @@ server.listen(PORT, async () => {
     
     // Store base URL globally for use in services
     global.BASE_URL = baseUrl;
+
+    // Initialize SparkTG Socket Service for real-time call events
+    try {
+        const sparkTGSocketService = require('./services/telephony/SparkTGSocketService');
+        sparkTGSocketService.initialize(io);
+        logger.info(' SparkTG Socket Service initialized');
+    } catch (error) {
+        logger.warn('SparkTG Socket Service initialization failed:', error.message);
+    }
 });
 
 

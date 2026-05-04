@@ -34,10 +34,9 @@ class DashboardService {
         }
       }
 
-      // Get pending approval counts only for Super Admin
-      // Even if other users have approvals.view permission, only Super Admin processes approvals
-      const SUPER_ADMIN_ROLE_ID = parseInt(process.env.SUPER_ADMIN_ROLE_ID || '5', 10);
-      if (user.role_id === SUPER_ADMIN_ROLE_ID) {
+      // Get pending approval counts for users with approval permissions
+      // Any user with approvals.view permission should see pending approvals
+      if (hasPermission(permissions, 'approvals.view')) {
         counts.pending_approvals = await this.getPendingApprovalsCount();
       }
 

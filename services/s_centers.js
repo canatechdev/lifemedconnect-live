@@ -9,9 +9,14 @@ const { generateCustomCode } = require('../lib/generateCode');
  */
 class CentersService extends BaseService {
   constructor() {
-    super('diagnostic_centers', 'id', 
-          ['center_name', 'center_code', 'short_code', 'contact_person', 'contact_number', 'email', 'address'],
-          ['id', 'center_name', 'center_code', 'short_code', 'contact_person', 'contact_number', 'email', 'address', 'is_active', 'created_at']);
+    super(
+      'diagnostic_centers',
+      'id',
+      // Searchable columns (only existing DB columns)
+      ['center_name', 'center_code', 'contact_number', 'email', 'address', 'city', 'state', 'pincode', 'country', 'owner_name'],
+      // Select columns for list responses
+      ['id', 'center_name', 'center_code', 'contact_number', 'email', 'address', 'city', 'state', 'pincode', 'country', 'owner_name', 'is_active', 'created_at']
+    );
   }
 
   /**
@@ -37,35 +42,35 @@ class CentersService extends BaseService {
       // Prepare center data with safe defaults. Do NOT include created_by here,
       // BaseService.create will append created_by using the createdBy argument.
       const centerData = {
-        user_id: data.user_id || null,
+        user_id: data.user_id ?? null,
         center_code: data.center_code,
         center_name: data.center_name,
-        center_type: data.center_type,
-        address: data.address,
-        owner_name: data.owner_name || null,
-        contact_number: data.contact_number || null,
-        email: data.email || null,
-        city: data.city || null,
-        city_type: data.city_type || null,
-        state: data.state || null,
-        pincode: data.pincode || null,
-        country: data.country || null,
-        dc_photos: data.dc_photos || null,
-        gps_latitude: data.gps_latitude || null,
-        gps_longitude: data.gps_longitude || null,
-        letterhead_path: data.letterhead_path || null,
-        footer_path: data.footer_path || null,
+        center_type: data.center_type ?? null,
+        address: data.address ?? null,
+        owner_name: data.owner_name ?? null,
+        contact_number: data.contact_number ?? null,
+        email: data.email ?? null,
+        city: data.city ?? null,
+        city_type: data.city_type ?? null,
+        state: data.state ?? null,
+        pincode: data.pincode ?? null,
+        country: data.country ?? null,
+        dc_photos: data.dc_photos ?? null,
+        gps_latitude: data.gps_latitude ?? null,
+        gps_longitude: data.gps_longitude ?? null,
+        letterhead_path: data.letterhead_path ?? null,
+        footer_path: data.footer_path ?? null,
         is_active: data.is_active !== undefined ? data.is_active : 1,
-        associate_doctor_1_id: data.associate_doctor_1_id || null,
-        associate_doctor_2_id: data.associate_doctor_2_id || null,
-        associate_doctor_3_id: data.associate_doctor_3_id || null,
-        associate_doctor_4_id: data.associate_doctor_4_id || null,
-        acc_name: data.acc_name || null,
-        acc_no: data.acc_no || null,
-        ifsc_code: data.ifsc_code || null,
-        receivers_name: data.receivers_name || null,
-        branch_name: data.branch_name || null,
-        accredation: data.accredation || null
+        associate_doctor_1_id: data.associate_doctor_1_id ?? null,
+        associate_doctor_2_id: data.associate_doctor_2_id ?? null,
+        associate_doctor_3_id: data.associate_doctor_3_id ?? null,
+        associate_doctor_4_id: data.associate_doctor_4_id ?? null,
+        acc_name: data.acc_name ?? null,
+        acc_no: data.acc_no ?? null,
+        ifsc_code: data.ifsc_code ?? null,
+        receivers_name: data.receivers_name ?? null,
+        branch_name: data.branch_name ?? null,
+        accredation: data.accredation ?? null
       };
 
       const effectiveCreatedBy = createdBy ?? data.created_by ?? null;

@@ -1,14 +1,55 @@
 const db = require('../lib/dbconnection');
 const { hashPassword, comparePassword } = require('../lib/auth');
 
-const addUser = async (username, email, password, role_id, mobile, full_name) => {
+const addUser = async (username, email, password, role_id, mobile, full_name, telephony_username = null, telephony_password = null) => {
     const hashedPassword = await hashPassword(password);
 
+    // Check if username or email already exists with active user (not soft-deleted)
+    const existingActiveUserSql = 'SELECT id, username, email FROM users WHERE (username = ? OR email = ?) AND is_deleted = 0 LIMIT 1';
+    const existingActiveUser = await db.query(existingActiveUserSql, [username, email]);
+    
+    if (existingActiveUser.length > 0) {
+        // Check what specifically conflicts
+        const existing = existingActiveUser[0];
+        if (existing.username === username) {
+            throw new Error('Username already exists');
+        }
+        if (existing.email === email) {
+            throw new Error('Email already exists');
+        }
+    }
+
+    // Check if there's a soft-deleted user with same username/email to clean up
+    const existingSoftDeletedSql = 'SELECT id FROM users WHERE (username = ? OR email = ?) AND is_deleted = 1 LIMIT 1';
+    const existingSoftDeleted = await db.query(existingSoftDeletedSql, [username, email]);
+    
+    if (existingSoftDeleted.length > 0) {
+        // Permanently delete the soft-deleted user to allow reuse
+        const cleanupSql = 'DELETE FROM users WHERE id = ?';
+        await db.query(cleanupSql, [existingSoftDeleted[0].id]);
+    }
+
     const sql = `
-      INSERT INTO users (username, email, password_hash, role_id, full_name, mobile, is_active, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 1, NOW(), NOW())`;
-    const result = await db.query(sql, [username, email, hashedPassword, role_id, full_name || null, mobile || null]);
+      INSERT INTO users (username, email, password_hash, role_id, full_name, mobile, telephony_username, telephony_password, is_active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NOW(), NOW())`;
+    const result = await db.query(sql, [username, email, hashedPassword, role_id, full_name || null, mobile || null, telephony_username || null, telephony_password || null]);
     return result.insertId;
+};
+
+// Helper function to check if user exists (for validation)
+const checkUserExists = async (username, email, excludeId = null) => {
+    let sql = 'SELECT id, username, email FROM users WHERE (username = ? OR email = ?) AND is_deleted = 0';
+    let params = [username, email];
+    
+    if (excludeId) {
+        sql += ' AND id != ?';
+        params.push(excludeId);
+    }
+    
+    sql += ' LIMIT 1';
+    
+    const existing = await db.query(sql, params);
+    return existing[0] || null;
 };
 
 const getUserByUsername = async (username) => {
@@ -23,7 +64,7 @@ const getUserByUsername = async (username) => {
         FROM users u
         LEFT JOIN technicians t ON u.id = t.user_id AND t.is_deleted = 0
         LEFT JOIN diagnostic_centers dc ON u.id = dc.user_id AND dc.is_deleted = 0
-        WHERE u.username = ?
+        WHERE u.username = ? AND u.is_deleted = 0 AND u.is_active = 1
         LIMIT 1
     `;
 
@@ -34,7 +75,7 @@ const getUserByUsername = async (username) => {
 
 const getUserById = async (id) => {
     const sql = `
-      SELECT id, username, email, role_id, full_name, mobile, is_active, last_login, created_at, updated_at 
+      SELECT id, username, email, role_id, full_name, mobile, telephony_username, telephony_password, is_active, last_login, created_at, updated_at 
       FROM users 
       WHERE id = ?`;
     const users = await db.query(sql, [id]);
@@ -46,7 +87,7 @@ const getUsersByIds = async (ids) => {
     if (!Array.isArray(ids) || ids.length === 0) return [];
     const placeholders = ids.map(() => '?').join(', ');
     const sql = `
-      SELECT id, username, email, role_id, full_name, mobile, is_active, last_login, created_at, updated_at 
+      SELECT id, username, email, role_id, full_name, mobile, telephony_username, telephony_password, is_active, last_login, created_at, updated_at 
       FROM users 
       WHERE id IN (${placeholders})`;
     const users = await db.query(sql, ids);
@@ -87,7 +128,7 @@ const getAllUsers = async ({ page = 1, limit = 0, search = '', sortBy = 'id', so
 
     // Paginated query with sorting
     let dataSql = `
-        SELECT id, username, email, role_id, full_name, mobile, is_active, last_login, created_at, updated_at 
+        SELECT id, username, email, role_id, full_name, mobile, telephony_username, telephony_password, is_active, last_login, created_at, updated_at 
         FROM users${whereClause}
         ORDER BY ${validSortBy} ${validSortOrder}
     `;
@@ -146,6 +187,16 @@ const updateUser = async (id, data) => {
         values.push(data.is_active);
     }
 
+    // Handle telephony credentials
+    if (data.hasOwnProperty('telephony_username')) {
+        fields.push("telephony_username = ?");
+        values.push(data.telephony_username || null);
+    }
+    if (data.hasOwnProperty('telephony_password')) {
+        fields.push("telephony_password = ?");
+        values.push(data.telephony_password || null);
+    }
+
     // Only hash and update password if it's non-empty
     if (typeof data.password === 'string' && data.password.trim() !== '') {
         const hashedPassword = await hashPassword(data.password);
@@ -200,5 +251,6 @@ module.exports = {
     comparePassword,
     updateUser,
     changePassword,
-    softDeleteUser
+    softDeleteUser,
+    checkUserExists
 };

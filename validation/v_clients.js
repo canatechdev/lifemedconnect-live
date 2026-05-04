@@ -37,6 +37,10 @@ const createClientSchema = Joi.object({
   agreement_id: Joi.string().max(45).optional().allow(null, ''),
   validity_period_start: Joi.date().optional().allow(null),
   validity_period_end: Joi.date().optional().allow(null),
+  user_id: Joi.alternatives().try(
+  Joi.number().integer().positive().optional(),
+  Joi.string().allow('').optional()
+).optional().allow(null), // TPA user assignment - allows number, empty string, or null
   insurer_ids: Joi.array().items(Joi.number().integer().positive()).optional()
 });
 

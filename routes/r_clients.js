@@ -134,6 +134,8 @@ router.put(
       ...(req.body.onboarding_date && { onboarding_date: toMySqlDate(req.body.onboarding_date) }),
       ...(req.body.validity_period_start && { validity_period_start: toMySqlDate(req.body.validity_period_start) }),
       ...(req.body.validity_period_end && { validity_period_end: toMySqlDate(req.body.validity_period_end) }),
+      // Handle user_id: convert empty string to null for clearing assignment
+      ...(req.body.user_id !== undefined && { user_id: req.body.user_id === '' ? null : parseInt(req.body.user_id) || null }),
       invoice_format_upload: invoicePath || req.body.invoice_format_upload,
       updated_by: req.user.id
     };

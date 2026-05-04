@@ -30,6 +30,7 @@ class ApprovalService {
             throw new Error('Approval request not found');
         }
 
+        
         if (approval.status !== 'pending') {
             throw new Error(`Approval already ${approval.status}`);
         }
@@ -144,15 +145,93 @@ class ApprovalService {
         // Get entity handler if available
         const handler = getHandler(entity_type);
 
-        logger.info('applyApprovedChanges start', {
+        // Special handling: appointment reschedule must go through rescheduleAppointment
+        logger.info('Reschedule condition check', {
             entity_type,
-            entity_id,
-            action_type,
-            has_handler: !!handler,
-            new_data_keys: new_data ? Object.keys(new_data) : [],
-            has_medical_status: !!new_data?.medical_status
+            has_medical_status: !!new_data?.medical_status,
+            medical_status: new_data?.medical_status,
+            has_confirmed_date: !!new_data?.confirmed_date,
+            confirmed_date: new_data?.confirmed_date,
+            has_confirmed_time: !!new_data?.confirmed_time,
+            confirmed_time: new_data?.confirmed_time,
+            condition_met: entity_type === 'appointment' && new_data?.medical_status === 'rescheduled' && new_data?.confirmed_date && new_data?.confirmed_time
         });
 
+        if (entity_type === 'appointment' && new_data?.medical_status === 'rescheduled' && new_data?.confirmed_date && new_data?.confirmed_time) {
+            // Extract actorContext if it was stored in the approval request
+            let actorContext = new_data._actorContext || null;
+
+            // Fallback: infer actorContext from requesting user's center/technician when missing
+            if (!actorContext && approval.requested_by) {
+                try {
+                    const [users] = await connection.query('SELECT center_id, diagnostic_center_id, technician_id FROM users WHERE id = ?', [approval.requested_by]);
+                    if (users && users[0]) {
+                        const centerId = users[0].center_id || users[0].diagnostic_center_id || null;
+                        const technicianId = users[0].technician_id || null;
+                        actorContext = centerId
+                            ? { centerId, type: 'center' }
+                            : (technicianId ? { technicianId, type: 'technician' } : null);
+                    }
+                } catch (e) {
+                    // leave actorContext null if lookup fails
+                }
+            }
+
+            // Final fallback: infer from appointment data for Both
+            if (!actorContext) {
+                try {
+                    const [apptRows] = await connection.query('SELECT visit_type, center_id, other_center_id FROM appointments WHERE id = ?', [entity_id]);
+                    if (apptRows && apptRows[0] && apptRows[0].visit_type === 'Both') {
+                        const appt = apptRows[0];
+                        
+                        // Check which side the requesting user manages
+                        const [userRows] = await connection.query('SELECT center_id, diagnostic_center_id, technician_id FROM users WHERE id = ?', [approval.requested_by]);
+                        if (userRows && userRows[0]) {
+                            const userCenterId = userRows[0].center_id || userRows[0].diagnostic_center_id;
+                            const isTechnician = !!userRows[0].technician_id;
+                            
+                            if (isTechnician) {
+                                actorContext = { centerId: appt.other_center_id, type: 'technician' };
+                            } else if (userCenterId) {
+                                if (userCenterId === appt.center_id) {
+                                    actorContext = { centerId: appt.center_id, type: 'center' };
+                                } else if (userCenterId === appt.other_center_id) {
+                                    actorContext = { centerId: appt.other_center_id, type: 'technician' };
+                                } else {
+                                    actorContext = { centerId: appt.center_id, type: 'center' };
+                                }
+                            } else {
+                                actorContext = { centerId: appt.center_id, type: 'center' };
+                            }
+                        } else {
+                            actorContext = { centerId: appt.center_id, type: 'center' };
+                        }
+                    }
+                } catch (e) {
+                    // leave null if lookup fails
+                }
+            }
+
+            logger.info('applyApprovedChanges: appointment reschedule detected - delegating to rescheduleAppointment', {
+                entity_id,
+                confirmed_date: new_data.confirmed_date,
+                confirmed_time: new_data.confirmed_time,
+                reschedule_reason: new_data.reschedule_reason,
+                actorContext: actorContext
+            });
+
+            await coreAppointments.rescheduleAppointment(
+                entity_id,
+                new_data.confirmed_date,
+                new_data.confirmed_time,
+                new_data.reschedule_reason || null,
+                context.reviewedBy || approval.requested_by || null,
+                actorContext
+            );
+
+            return;
+        }
+        
         // Special handling: appointment medical_status updates must go through core flow to update tests/statuses
         if (entity_type === 'appointment' && new_data?.medical_status) {
             // Extract actorContext if it was stored in the approval request
@@ -180,12 +259,32 @@ class ApprovalService {
                     const [apptRows] = await connection.query('SELECT visit_type, center_id, other_center_id, center_confirmed_at, home_confirmed_at FROM appointments WHERE id = ?', [entity_id]);
                     if (apptRows && apptRows[0] && apptRows[0].visit_type === 'Both') {
                         const appt = apptRows[0];
-                        if (!appt.center_confirmed_at && appt.home_confirmed_at) {
-                            actorContext = { centerId: appt.other_center_id, type: 'technician' };
-                        } else if (appt.center_confirmed_at && !appt.home_confirmed_at) {
-                            actorContext = { centerId: appt.center_id, type: 'center' };
+                        
+                        // Check which side the requesting user manages
+                        const [userRows] = await connection.query('SELECT center_id, diagnostic_center_id, technician_id FROM users WHERE id = ?', [approval.requested_by]);
+                        if (userRows && userRows[0]) {
+                            const userCenterId = userRows[0].center_id || userRows[0].diagnostic_center_id;
+                            const isTechnician = !!userRows[0].technician_id;
+                            
+                            if (isTechnician) {
+                                // Technician always manages home side
+                                actorContext = { centerId: appt.other_center_id, type: 'technician' };
+                            } else if (userCenterId) {
+                                // Center user: check which center they manage
+                                if (userCenterId === appt.center_id) {
+                                    actorContext = { centerId: appt.center_id, type: 'center' };
+                                } else if (userCenterId === appt.other_center_id) {
+                                    actorContext = { centerId: appt.other_center_id, type: 'technician' };
+                                } else {
+                                    // Default to center side if no match
+                                    actorContext = { centerId: appt.center_id, type: 'center' };
+                                }
+                            } else {
+                                // Admin: default to center side
+                                actorContext = { centerId: appt.center_id, type: 'center' };
+                            }
                         } else {
-                            // both or neither: default to center side
+                            // No user info: default to center side
                             actorContext = { centerId: appt.center_id, type: 'center' };
                         }
                     }
@@ -206,6 +305,15 @@ class ApprovalService {
                 medical_remarks: new_data.medical_remarks,
                 pending_report_types: new_data.pending_report_types
             };
+
+            // Handle files if present in approval
+            if (new_data._files && Array.isArray(new_data._files) && new_data._files.length > 0) {
+                await coreAppointments.saveAppointmentMedicalFiles(
+                    entity_id,
+                    new_data._files,
+                    context.reviewedBy || approval.requested_by || null
+                );
+            }
 
             // Pass actorContext if available (for Both appointments); null for simple Center/Home
             await coreAppointments.updateMedicalStatus(
@@ -236,9 +344,10 @@ class ApprovalService {
                     await handler.update(connection, entity_id, new_data, { old_data });
                 }
 
-                // Prevent non-column fields like selected_items from hitting the generic DB update
+                // Prevent non-column fields like selected_items and _actorContext from hitting the generic DB update
                 const sanitizedData = { ...new_data };
                 delete sanitizedData.selected_items;
+                delete sanitizedData._actorContext;
 
                 await this.updateEntity(connection, entity_type, entity_id, sanitizedData, { old_data, handler: null });
                 break;

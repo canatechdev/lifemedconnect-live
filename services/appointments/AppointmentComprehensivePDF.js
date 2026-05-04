@@ -76,6 +76,12 @@ class AppointmentTPAPDFService {
             [appointmentId]
         );
 
+        // Fetch customer documents
+        const customerDocuments = await db.query(
+            `SELECT * FROM appointment_documents WHERE appointment_id = ? AND is_deleted = 0 ORDER BY doc_type, uploaded_at`,
+            [appointmentId]
+        );
+
         // Fetch categorized reports
         const reports = await db.query(
             `SELECT * FROM appointment_categorized_reports WHERE appointment_id = ? AND is_deleted = 0 ORDER BY report_type, uploaded_at`,
@@ -100,6 +106,7 @@ class AppointmentTPAPDFService {
         return {
             ...appointment,
             customerImages,
+            customerDocuments,
             reports,
             pathologyData
         };
@@ -118,6 +125,9 @@ class AppointmentTPAPDFService {
         // 1. MTRF Report
         await this.appendReportsByType(finalPdf, data.reports, 'mtrf', baseDir, null, null);
 
+        // 2.1. Customer Documents (with letterhead) - Comment out if not needed
+        await this.appendCustomerDocuments(finalPdf, data.customerDocuments, baseDir, headerDataUrl, footerDataUrl);
+
         // 2. Customer Photos (with letterhead)
         await this.appendCustomerPhotos(finalPdf, data.customerImages, baseDir, headerDataUrl, footerDataUrl);
 
@@ -125,9 +135,14 @@ class AppointmentTPAPDFService {
         await this.appendReportsByType(finalPdf, data.reports, 'mer', baseDir, null, null);
 
         // 4. Pathology Report (with letterhead)
+        // OPTIONS: Uncomment the desired option(s)
+        
+        // Option 1: API-generated pathology report only
         await this.appendPathologyReport(finalPdf, data.pathologyData, data, headerDataUrl, footerDataUrl);
+        
+        // Option 2: User-uploaded pathology PDFs only
         await this.appendReportsByType(finalPdf, data.reports, 'pathology', baseDir, headerDataUrl, footerDataUrl);
-
+        
         // 5. Cardiology Report
         await this.appendReportsByType(finalPdf, data.reports, 'cardiology', baseDir, null, null);
 
@@ -153,7 +168,14 @@ class AppointmentTPAPDFService {
                 const ext = path.extname(imagePath).toLowerCase();
                 
                 let embedded;
-                if (ext === '.png') {
+                if (ext === '.pdf') {
+                    // Merge PDF directly
+                    const pdfBytes = await fs.readFile(imagePath);
+                    const imagePdf = await PDFDocument.load(pdfBytes);
+                    const pages = await finalPdf.copyPages(imagePdf, imagePdf.getPageIndices());
+                    pages.forEach(page => finalPdf.addPage(page));
+                    continue; // Skip the rest for PDFs as they're already merged
+                } else if (ext === '.png') {
                     embedded = await finalPdf.embedPng(imageBytes);
                 } else {
                     embedded = await finalPdf.embedJpg(imageBytes);
@@ -210,10 +232,106 @@ class AppointmentTPAPDFService {
                     width: scaledWidth,
                     height: scaledHeight
                 });
+            } catch (error) {
+                logger.error('Error adding customer image to PDF:', {
+                    imagePath: image.file_path,
+                    error: error.message
+                });
+            }
+        }
+    }
 
-            } catch (err) {
-                console.error('Failed to append customer image:', image.file_path, err.message);
-                continue;
+    /**
+     * Append customer documents with letterhead
+     */
+    async appendCustomerDocuments(finalPdf, customerDocuments, baseDir, headerDataUrl, footerDataUrl) {
+        if (!customerDocuments || customerDocuments.length === 0) return;
+
+        for (const document of customerDocuments) {
+            try {
+                const documentPath = path.isAbsolute(document.file_path) ? document.file_path : path.join(baseDir, document.file_path);
+                const documentBytes = await fs.readFile(documentPath);
+                const ext = path.extname(documentPath).toLowerCase();
+                
+                let embedded;
+                if (ext === '.pdf') {
+                    // Merge PDF directly
+                    const pdfBytes = await fs.readFile(documentPath);
+                    const documentPdf = await PDFDocument.load(pdfBytes);
+                    const pages = await finalPdf.copyPages(documentPdf, documentPdf.getPageIndices());
+                    pages.forEach(page => finalPdf.addPage(page));
+                    continue; // Skip the rest for PDFs as they're already merged
+                } else if (ext === '.png') {
+                    embedded = await finalPdf.embedPng(documentBytes);
+                } else if (ext === '.jpg' || ext === '.jpeg') {
+                    embedded = await finalPdf.embedJpg(documentBytes);
+                } else {
+                    // Skip unsupported document formats
+                    logger.warn('Skipping unsupported document format in customer documents section:', {
+                        documentPath: document.file_path,
+                        docType: document.doc_type,
+                        extension: ext
+                    });
+                    continue;
+                }
+
+                // Create page with letterhead
+                const page = finalPdf.addPage([595.28, 841.89]); // A4
+                
+                // Add letterhead header if available
+                if (headerDataUrl) {
+                    const headerImg = await this.embedDataUrl(finalPdf, headerDataUrl);
+                    const headerHeight = 100;
+                    const headerWidth = page.getWidth();
+                    page.drawImage(headerImg, {
+                        x: 0,
+                        y: page.getHeight() - headerHeight,
+                        width: headerWidth,
+                        height: headerHeight
+                    });
+                }
+
+                // Add letterhead footer if available
+                if (footerDataUrl) {
+                    const footerImg = await this.embedDataUrl(finalPdf, footerDataUrl);
+                    const footerHeight = 60;
+                    const footerWidth = page.getWidth();
+                    page.drawImage(footerImg, {
+                        x: 0,
+                        y: 0,
+                        width: footerWidth,
+                        height: footerHeight
+                    });
+                }
+
+                // Calculate available space for document
+                const topMargin = headerDataUrl ? 110 : 36;
+                const bottomMargin = footerDataUrl ? 70 : 36;
+                const sideMargin = 36;
+                
+                const maxWidth = page.getWidth() - (sideMargin * 2);
+                const maxHeight = page.getHeight() - topMargin - bottomMargin;
+                
+                const { width, height } = embedded.scale(1);
+                const scale = Math.min(maxWidth / width, maxHeight / height, 1);
+                const scaledWidth = width * scale;
+                const scaledHeight = height * scale;
+                
+                const x = (page.getWidth() - scaledWidth) / 2;
+                const y = bottomMargin + (maxHeight - scaledHeight) / 2;
+                
+                page.drawImage(embedded, {
+                    x,
+                    y,
+                    width: scaledWidth,
+                    height: scaledHeight
+                });
+            } catch (error) {
+                logger.error('Error adding customer document to PDF:', {
+                    documentPath: document.file_path,
+                    docType: document.doc_type,
+                    error: error.message
+                });
             }
         }
     }

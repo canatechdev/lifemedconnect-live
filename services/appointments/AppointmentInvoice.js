@@ -60,12 +60,14 @@ async function getProformaInvoiceData(appointmentId) {
 
     const totalAmount = enrichedItems.reduce((sum, item) => sum + item.rate, 0);
 
-    // Totals are based only on selected items. Any cost_type/amount is displayed separately.
+    // Use appointment amount as total instead of summed item rates
+    const displayAmount = appointment.amount != null && appointment.amount !== '' ? parseFloat(appointment.amount) : totalAmount;
+
     return {
         appointment,
         items: enrichedItems,
         totals: {
-            totalAmount,
+            totalAmount: displayAmount,
         },
     };
 }
@@ -162,7 +164,6 @@ function generateInvoiceContent(data) {
                 ${item.subDescription ? `<div class="text-sm text-gray-600">${item.subDescription}</div>` : ''}
             </td>
             <td class="text-center">${item.type}</td>
-            <td class="text-right">${item.rate}</td>
         </tr>
     `).join('');
 
@@ -232,8 +233,7 @@ function generateInvoiceContent(data) {
         <table class="items-table">
             <colgroup>
                 <col style="width: 8%" />
-                <col style="width: 60%" />
-                <col style="width: 12%" />
+                <col style="width: 72%" />
                 <col style="width: 20%" />
             </colgroup>
             <thead>
@@ -241,7 +241,6 @@ function generateInvoiceContent(data) {
                     <th class="text-center">#</th>
                     <th>Description</th>
                     <th class="text-center">Type</th>
-                    <th class="text-right">Rate</th>
                 </tr>
             </thead>
             <tbody>

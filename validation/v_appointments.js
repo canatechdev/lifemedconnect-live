@@ -186,7 +186,11 @@ const appointmentBulkUpdateSchema = Joi.object({
 // Confirm schedule schema
 const confirmScheduleSchema = Joi.object({
     confirmed_date: Joi.date().required(),
-    confirmed_time: Joi.string().pattern(/^([01]?[0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$/).required()
+    confirmed_time: Joi.string().pattern(/^([01]?[0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$/).required(),
+    actor_context: Joi.object({
+        centerId: Joi.number().required(),
+        type: Joi.string().valid('center', 'technician').optional()
+    }).optional()
 });
 
 // Reschedule schema
@@ -194,11 +198,19 @@ const rescheduleSchema = Joi.object({
     confirmed_date: Joi.date().required(),
     confirmed_time: Joi.string().pattern(/^([01]?[0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$/).required(),
     remarks: Joi.string().required().min(10).max(500),
+    actor_context: Joi.object({
+        centerId: Joi.number().required(),
+        type: Joi.string().valid('center', 'technician').optional()
+    }).optional(),
 });
 
 // Push back schema
 const pushBackSchema = Joi.object({
-    pushback_remarks: Joi.string().required().min(10).max(500)
+    pushback_remarks: Joi.string().required().min(10).max(500),
+    actor_context: Joi.object({
+        centerId: Joi.number().required(),
+        type: Joi.string().valid('center', 'technician').optional()
+    }).optional()
 });
 
 // Medical status schema
@@ -222,13 +234,18 @@ const medicalStatusSchema = Joi.object({
             Joi.string().allow('', null)
         )
         .optional(),
+    actor_context: Joi.object({
+        centerId: Joi.number().required(),
+        type: Joi.string().valid('center', 'technician').optional()
+    }).optional(),
 });
 
 // Test update schema
 const testUpdateSchema = Joi.object({
     testUpdates: Joi.array().items(
         Joi.object({
-            testId: Joi.number().required(),
+            testId: Joi.number().required(), // This is appointment_test_id from appointment_tests table
+            assigned_center_id: Joi.number().allow(null).optional(),
             assigned_technician_id: Joi.number().allow(null).optional(),
             visit_subtype: Joi.string().valid('center', 'home').optional()
         })

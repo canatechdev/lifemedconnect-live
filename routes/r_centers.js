@@ -80,7 +80,7 @@ router.get('/centers', verifyToken, asyncHandler(async (req, res) => {
   const result = await service.listCenters({
     page,
     limit,
-    search,
+    search: search || '',
     sortBy,
     sortOrder
   });

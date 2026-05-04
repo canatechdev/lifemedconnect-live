@@ -30,10 +30,12 @@ async function listQCPendingAppointments({ page = 1, limit = 10, search = '', so
             a.case_number LIKE ? OR 
             a.customer_first_name LIKE ? OR 
             a.customer_last_name LIKE ? OR
-            a.application_number LIKE ?
+            a.application_number LIKE ? OR
+            dc.center_name LIKE ? OR
+            dc2.center_name LIKE ?
         )`);
         const like = `%${search}%`;
-        searchParams.push(like, like, like, like);
+        searchParams.push(like, like, like, like, like, like);
     }
 
     if (customerCategory) {
@@ -46,12 +48,16 @@ async function listQCPendingAppointments({ page = 1, limit = 10, search = '', so
     const countSql = `
         SELECT COUNT(*) as total 
         FROM appointments a
+        LEFT JOIN diagnostic_centers dc ON a.center_id = dc.id
+        LEFT JOIN diagnostic_centers dc2 ON a.other_center_id = dc2.id
         ${whereClause}
     `;
 
     const dataSql = `
         SELECT 
             a.*,
+            dc.center_name as home_center_name,
+            dc2.center_name as other_center_name,
             COALESCE(
                 (SELECT 
                     JSON_ARRAYAGG(
@@ -69,8 +75,31 @@ async function listQCPendingAppointments({ page = 1, limit = 10, search = '', so
                 WHERE at.appointment_id = a.id
                 GROUP BY at.appointment_id),
                 JSON_ARRAY()
-            ) as tests
+            ) as tests,
+            (SELECT 
+                JSON_ARRAYAGG(
+                    JSON_OBJECT(
+                        'id', tel.id,
+                        'client_id', tel.client_id,
+                        'client_name', c.client_name,
+                        'client_code', c.client_code,
+                        'client_email', c.email_id,
+                        'client_email_2', c.email_id_2,
+                        'email_recipients', tel.email_recipients,
+                        'sent_at', tel.sent_at,
+                        'status', tel.status,
+                        'sent_by_name', u.full_name
+                    )
+                )
+                FROM tpa_email_log tel
+                LEFT JOIN users u ON tel.sent_by = u.id
+                LEFT JOIN clients c ON tel.client_id = c.id
+                WHERE tel.appointment_id = a.id AND tel.is_deleted = 0
+                ORDER BY tel.sent_at DESC
+            ) as tpa_emails
         FROM appointments a
+        LEFT JOIN diagnostic_centers dc ON a.center_id = dc.id
+        LEFT JOIN diagnostic_centers dc2 ON a.other_center_id = dc2.id
         ${whereClause}
         ORDER BY a.${validSortBy} ${validSortOrder}
     `;
@@ -89,12 +118,22 @@ async function listQCPendingAppointments({ page = 1, limit = 10, search = '', so
 
     let rows = await db.query(finalSql, searchParams);
 
-    // Parse tests data
+    // Parse tests and tpa_emails data
     rows = rows.map(row => {
         try {
             row.tests = row.tests ? (typeof row.tests === 'string' ? JSON.parse(row.tests) : row.tests) : [];
         } catch (e) {
             row.tests = [];
+        }
+        try {
+            row.tpa_emails = row.tpa_emails ? (typeof row.tpa_emails === 'string' ? JSON.parse(row.tpa_emails) : row.tpa_emails) : [];
+            // Parse email_recipients for each TPA email
+            row.tpa_emails = row.tpa_emails.map(tpa => ({
+                ...tpa,
+                email_recipients: tpa.email_recipients ? (typeof tpa.email_recipients === 'string' ? JSON.parse(tpa.email_recipients) : tpa.email_recipients) : []
+            }));
+        } catch (e) {
+            row.tpa_emails = [];
         }
         return row;
     });
@@ -114,8 +153,10 @@ async function listQCPendingAppointments({ page = 1, limit = 10, search = '', so
  * Get QC appointment details (appointment + categorized reports)
  * @param {number} appointmentId 
  * @param {number|null} centerId - Optional: filter by center for Both appointments
+ * @param {number|null} userId - Optional: filter reports by uploader for DC users
+ * @param {string|null} userRole - Optional: user role to determine filtering behavior
  */
-async function getQCAppointmentDetails(appointmentId, centerId = null) {
+async function getQCAppointmentDetails(appointmentId, centerId = null, userId = null, userRole = null) {
     // Get appointment
     const appointmentSql = 'SELECT * FROM appointments WHERE id = ?';
     const appointmentRows = await db.query(appointmentSql, [appointmentId]);
@@ -128,7 +169,7 @@ async function getQCAppointmentDetails(appointmentId, centerId = null) {
 
     // Get categorized reports (grouped by type), filtered by centerId if provided
     const { getCategorizedReports } = require('./AppointmentReports');
-    const reports = await getCategorizedReports(appointmentId, centerId);
+    const reports = await getCategorizedReports(appointmentId, centerId, userId, userRole);
 
     // Get ALL QC history (limit 50 for safety)
     const qcHistorySql = `
@@ -185,15 +226,16 @@ async function getQCAppointmentDetails(appointmentId, centerId = null) {
  * @param {number} appointmentId 
  * @param {string} remarks 
  * @param {number} userId 
+ * @param {number|null} centerId - Optional: for center-specific pushback in "Both" visit type
  */
-async function pushBackToReports(appointmentId, remarks, userId) {
+async function pushBackToReports(appointmentId, remarks, userId, centerId = null) {
     const connection = await db.pool.getConnection();
     try {
         await connection.beginTransaction();
 
-        // Get current appointment status
+        // Get current appointment status and visit type
         const [current] = await connection.query(
-            'SELECT status, medical_status, qc_status FROM appointments WHERE id = ?',
+            'SELECT status, medical_status, qc_status, visit_type FROM appointments WHERE id = ?',
             [appointmentId]
         );
 
@@ -202,6 +244,44 @@ async function pushBackToReports(appointmentId, remarks, userId) {
         }
 
         const currentRow = Array.isArray(current) ? current[0] : current;
+        const visitType = currentRow.visit_type;
+
+        // For "Both" visit type with centerId, implement center-specific pushback
+        if (visitType === 'Both' && centerId) {
+            // Delete only reports from this specific center
+            await connection.query(`
+                UPDATE appointment_categorized_reports 
+                SET is_deleted = 1 
+                WHERE appointment_id = ? 
+                AND uploaded_by IN (
+                    SELECT u.id FROM users u 
+                    WHERE u.diagnostic_center_id = ?
+                )
+            `, [appointmentId, centerId]);
+
+            // Add center-specific QC history entry
+            await connection.query(`
+                INSERT INTO appointment_qc_history 
+                (appointment_id, action, remarks, qc_by, created_at, 
+                 pathology_checked, cardiology_checked, radiology_checked, mer_checked, mtrf_checked, other_checked)
+                VALUES (?, 'center_pushback', ?, ?, NOW(), ?, ?, ?, ?, ?, ?)
+            `, [
+                appointmentId,
+                `Center-specific pushback: ${remarks}`,
+                userId,
+                // Preserve checkbox states from previous QC
+                previousCheckboxes.pathology_checked || 0,
+                previousCheckboxes.cardiology_checked || 0,
+                previousCheckboxes.radiology_checked || 0,
+                previousCheckboxes.mer_checked || 0,
+                previousCheckboxes.mtrf_checked || 0,
+                previousCheckboxes.other_checked || 0
+            ]);
+
+            await connection.commit();
+            logger.info('Center-specific QC pushback completed', { appointmentId, centerId, userId });
+            return { success: true, message: 'Center-specific reports pushed back successfully' };
+        }
 
         // Fetch the LATEST QC history to get current checkbox states
         const [latestHistory] = await connection.query(`

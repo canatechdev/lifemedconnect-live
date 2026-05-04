@@ -167,9 +167,27 @@ async function sendOtpEmail(to, otp) {
         logger.info('OTP email sending skipped (EMAIL_ENABLED=false)', { to });
         return;
     }
-    
+
     const expiryMinutes = getOtpExpiryMinutes();
-    await emailService.sendOtpEmail(to, otp, expiryMinutes);
+    try {
+        const resp = await emailService.sendOtpEmail(to, otp, expiryMinutes);
+        if (!resp?.success) {
+            logger.error('OTP email send failed', {
+                to,
+                message: resp?.message,
+                code: resp?.code,
+                response: resp?.response
+            });
+            throw new Error('OTP_EMAIL_SEND_FAILED');
+        }
+    } catch (error) {
+        logger.error('OTP email send failed', {
+            to,
+            error: error?.message,
+            code: error?.code
+        });
+        throw new Error('OTP_EMAIL_SEND_FAILED');
+    }
 }
 
 async function requestOtp({ username, userId, ipAddress = null }) {
@@ -206,7 +224,14 @@ async function requestOtp({ username, userId, ipAddress = null }) {
 
     // Send OTP via email if configured
     if (user.email) {
-        await sendOtpEmail(user.email, otp);
+        try {
+            await sendOtpEmail(user.email, otp);
+        } catch (error) {
+            return {
+                success: false,
+                message: 'Failed to send OTP email. Please try again or contact support.'
+            };
+        }
     } else {
         logger.warn('User has no email, OTP not sent', { userId: user.id });
         return { success: false, message: 'User has no email address configured' };

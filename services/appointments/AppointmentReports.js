@@ -78,8 +78,21 @@ async function uploadCategorizedReports(appointmentId, reportType, filesMeta, us
  * Get all categorized reports for an appointment (grouped by type)
  * @param {number} appointmentId 
  * @param {number|null} centerId - Optional: filter reports by center for Both appointments
+ * @param {number|null} userId - Optional: filter reports by uploader for DC users
+ * @param {string|null} userRole - Optional: user role to determine filtering behavior
  */
-async function getCategorizedReports(appointmentId, centerId = null) {
+async function getCategorizedReports(appointmentId, centerId = null, userId = null, userRole = null) {
+    // DEBUG: Log function call
+    console.log('=== getCategorizedReports CALLED ===');
+    console.log('Parameters:', { appointmentId, centerId, userId, userRole });
+    
+    // Get appointment details to check visit type
+    const appointmentSql = 'SELECT visit_type FROM appointments WHERE id = ?';
+    const appointmentRows = await db.query(appointmentSql, [appointmentId]);
+    
+    const visitType = appointmentRows && appointmentRows.length > 0 ? appointmentRows[0].visit_type : null;
+    console.log('Visit type detected:', visitType);
+    
     // For Both appointments with centerId, filter reports by assigned_center_id
     let sqlReports = `
         SELECT 
@@ -90,12 +103,35 @@ async function getCategorizedReports(appointmentId, centerId = null) {
             acr.file_name,
             acr.file_size,
             acr.uploaded_by,
-            acr.uploaded_at
+            acr.uploaded_at,
+            u.full_name as uploaded_by_name
         FROM appointment_categorized_reports acr
+        LEFT JOIN users u ON acr.uploaded_by = u.id
         WHERE acr.appointment_id = ? AND acr.is_deleted = 0
     `;
 
     const params = [appointmentId];
+
+    // For "Both" visit type: Apply DC-specific filtering (only for non-admin users)
+    // DEBUG: Log values to understand what's happening
+    console.log('DC Filtering Debug:', { 
+        visitType, 
+        userId, 
+        userRole, 
+        isBoth: visitType === 'Both',
+        hasUserId: !!userId,
+        hasUserRole: !!userRole,
+        isNotAdmin: userRole !== 'Admin' && userRole !== 'Super Admin'
+    });
+    
+    const shouldFilter = visitType === 'Both' && userId && userRole && userRole !== 'Admin' && userRole !== 'Super Admin' && userRole !== 'TPA';
+    console.log('Should apply DC filtering:', shouldFilter);
+    
+    if (shouldFilter) {
+        sqlReports += ` AND acr.uploaded_by = ?`;
+        params.push(userId);
+        console.log('DC Filtering Applied: Adding uploaded_by filter for user', userId);
+    }
 
     // If centerId is provided, join with appointment_tests to filter by assigned_center_id
     if (centerId) {
@@ -108,11 +144,13 @@ async function getCategorizedReports(appointmentId, centerId = null) {
                 acr.file_name,
                 acr.file_size,
                 acr.uploaded_by,
-                acr.uploaded_at
+                acr.uploaded_at,
+                u.full_name as uploaded_by_name
             FROM appointment_categorized_reports acr
             INNER JOIN appointment_tests at ON acr.appointment_id = at.appointment_id
             LEFT JOIN tests t ON at.test_id = t.id
             LEFT JOIN test_categories tc ON at.category_id = tc.id
+            LEFT JOIN users u ON acr.uploaded_by = u.id
             WHERE acr.appointment_id = ? 
                 AND acr.is_deleted = 0
                 AND at.assigned_center_id = ?
@@ -122,6 +160,13 @@ async function getCategorizedReports(appointmentId, centerId = null) {
                     (t.report_type IS NULL AND tc.report_type IS NULL)
                 )
         `;
+        
+        // Add userId filtering for DC users in the second query too (only for "Both" visit type)
+        if (visitType === 'Both' && userId && userRole && userRole !== 'Admin' && userRole !== 'Super Admin' && userRole !== 'TPA') {
+            sqlReports += ` AND acr.uploaded_by = ?`;
+            params.push(userId);
+        }
+        
         params.push(centerId);
     }
 

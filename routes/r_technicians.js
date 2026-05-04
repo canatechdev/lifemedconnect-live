@@ -21,11 +21,19 @@ async function getTechnicianCode(technicianId) {
     } catch { return ''; }
 }
 
+// Helper: Get center city for city-based technician sharing
+async function getCenterCity(centerId) {
+    try {
+        const rows = await db.query('SELECT city FROM diagnostic_centers WHERE id = ? AND is_deleted = 0', [centerId]);
+        return rows?.[0]?.city || null;
+    } catch { return null; }
+}
+
 const technicianSchema = Joi.object({
   user_id: Joi.number().integer().optional().allow(null),
   center_id: Joi.number().integer().required(),
   technician_code: Joi.string().max(50).optional().allow('', null),
-  technician_type: Joi.string().valid('On-Roll', 'In-House').default('In-House'),
+  technician_type: Joi.string().valid('On-Call', 'In-House').default('In-House'),
   rate_per_appointment: Joi.number().precision(2).default(0.00),
   profile_pic: Joi.string().max(255).optional().allow(null, ''),
   full_name: Joi.string().max(255).required(),
@@ -50,13 +58,26 @@ const deleteTechniciansSchema = Joi.object({
 
 router.get('/technicians', verifyToken, asyncHandler(async (req, res) => {
   const { page, limit, search, sortBy, sortOrder } = parsePaginationParams(req.query);
+  const { center_id, include_city_technicians } = req.query;
+
+  // Get user's center city if they're a center user and city sharing is requested
+  let user_center_city = null;
+  if (center_id && include_city_technicians === 'true' && req.user.diagnostic_center_id) {
+    user_center_city = await getCenterCity(req.user.diagnostic_center_id);
+  }
+
+  // For dropdown usage, remove pagination limits unless explicitly requested
+  const effectiveLimit = limit || 0;
 
   const result = await service.listTechnicians({
     page,
-    limit,
+    limit: effectiveLimit,
     search,
     sortBy,
-    sortOrder
+    sortOrder,
+    center_id: center_id ? parseInt(center_id) : null,
+    include_city_technicians: include_city_technicians === 'true',
+    user_center_city
   });
   return ApiResponse.paginated(res, result.data, result.pagination);
 }));

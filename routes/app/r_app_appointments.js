@@ -189,36 +189,94 @@ router.post('/appointments/:id/reschedule', verifyToken, async (req, res) => {
         const normalizedDate = confirmed_date; // app already sends yyyy-mm-dd
         const normalizedTime = confirmed_time; // app already sends hh:mm
 
+        // Build actor context for technician
+        const actorContext = {
+            technicianId: technicianId,
+            type: 'technician'
+        };
+
+        // Direct reschedule without approval for technicians
+        const result = await coreAppointments.rescheduleAppointment(
+            appointmentId,
+            normalizedDate,
+            normalizedTime,
+            remarks || null,
+            req.user.id,
+            actorContext
+        );
+
+        // Direct success response for technician reschedule
+        return ApiResponse.appSuccess(res, 'Appointment rescheduled successfully', {
+            appointmentId: appointmentId,
+            confirmed_date: normalizedDate,
+            confirmed_time: normalizedTime,
+            rescheduled_by: req.user.id
+        });
+    } catch (error) {
+        logger.error('App reschedule failed', { error: error.message, userId: req.user?.id, appointmentId: req.params?.id });
+        return ApiResponse.appError(res, 'Failed to reschedule appointment', 500);
+    }
+});
+
+// POST /api/app/appointments/:id/confirm-schedule
+// Technician confirm schedule request on own appointment/tests (goes to approval flow unless user can auto-approve)
+router.post('/appointments/:id/confirm-schedule', verifyToken, async (req, res) => {
+    try {
+        const appointmentId = parseInt(req.params.id, 10);
+        const { confirmed_date, confirmed_time } = req.body || {};
+
+        if (Number.isNaN(appointmentId)) {
+            return ApiResponse.appError(res, 'Invalid appointment id', 400);
+        }
+        if (!confirmed_date || !confirmed_time) {
+            return ApiResponse.appError(res, 'confirmed_date and confirmed_time are required', 400);
+        }
+
+        const { technicianId, owns } = await appointmentService.getTechnicianContextForAppointment(appointmentId, req.user.id);
+        if (!technicianId || !owns) {
+            return ApiResponse.appError(res, 'Not authorized for this appointment', 403);
+        }
+
+        const normalizedDate = confirmed_date; // app already sends yyyy-mm-dd
+        const normalizedTime = confirmed_time; // app already sends hh:mm
+
+        // Build actor context for technician
+        const actorContext = {
+            technicianId: technicianId,
+            type: 'technician'
+        };
+
         const result = await updateWithApproval({
             entity_type: 'appointment',
             entity_id: appointmentId,
             getFunction: async (id) => await coreAppointments.getAppointment(id),
-            updateFunction: async (id) => await coreAppointments.rescheduleAppointment(
+            updateFunction: async (id) => await coreAppointments.confirmSchedule(
                 id,
                 normalizedDate,
                 normalizedTime,
-                remarks || null,
-                req.user.id
+                req.user.id,
+                actorContext
             ),
             new_data: {
                 confirmed_date: normalizedDate,
                 confirmed_time: normalizedTime,
-                medical_status: 'rescheduled'
+                medical_status: 'scheduled',
+                _actorContext: actorContext  // Store actorContext for approval processing
             },
             user: req.user,
-            notes: remarks ? `Reschedule reason: ${remarks}` : ''
+            notes: 'Technician confirmed schedule'
         });
 
         const response = formatApprovalResponse(result);
         // Align app response style; include needsApproval flag if present
-        return ApiResponse.appSuccess(res, response.message || 'Reschedule request submitted', {
+        return ApiResponse.appSuccess(res, response.message || 'Schedule confirmation submitted', {
             needsApproval: !!response.needsApproval,
             approvalId: response.approvalId || null,
             ...response
         });
     } catch (error) {
-        logger.error('App reschedule failed', { error: error.message, userId: req.user?.id, appointmentId: req.params?.id });
-        return ApiResponse.appError(res, 'Failed to reschedule appointment', 500);
+        logger.error('App confirm schedule failed', { error: error.message, userId: req.user?.id, appointmentId: req.params?.id });
+        return ApiResponse.appError(res, 'Failed to confirm schedule', 500);
     }
 });
 
@@ -361,7 +419,7 @@ router.post('/appointments/:id/medical-status',
                 }
             }
 
-            // COMPLETED path -> approval flow (match web route behavior)
+            // COMPLETED path -> direct completion without approval for all users
             if (medical_status === 'completed') {
                 let filesMeta = [];
                 if (req.files && req.files.length > 0) {
@@ -376,30 +434,28 @@ router.post('/appointments/:id/medical-status',
                     );
                 }
 
-                const result = await updateWithApproval({
-                    entity_type: 'appointment',
-                    action_type: 'update',
-                    entity_id: appointmentId,
-                    new_data: {
-                        medical_status: 'completed',
-                        medical_remarks: medical_remarks || null,
+                // APPROVAL REMOVED: Medical completion no longer requires approval for any user
+                // Direct update for all users - no approval flow needed
+                const result = await coreAppointments.updateMedicalStatus(
+                    appointmentId,
+                    medical_status,
+                    {
                         aadhaar_number: aadhaar_number || null,
                         pan_number: pan_number || null,
-                        pending_report_types: pendingTypesArray,
-                        updated_by: req.user.id,
-                        _actorContext: actorContext
+                        medical_remarks: medical_remarks || null,
+                        pending_report_types: pendingTypesArray
                     },
-                    created_by: req.user.id,
-                    role_id: req.user.role_id,
-                    getFunction: coreAppointments.getAppointment,
-                    updateFunction: coreAppointments.updateAppointment,
-                    user: req.user,
-                    notes: actorContext ? `Medical completion requested by ${actorContext.type} (ID: ${actorContext.centerId || actorContext.technicianId})` : 'Medical completion requested with remarks/files',
-                    priority: 'high',
-                });
+                    req.user.id,
+                    actorContext
+                );
 
-                const response = formatApprovalResponse(result);
-                return ApiResponse.appSuccess(res, response.message || 'Medical completion submitted for approval', response);
+                // Fetch and return completion status for 'Both' appointments
+                const completionStatus = await coreAppointments.getAppointmentCompletionStatus(appointmentId);
+
+                return ApiResponse.appSuccess(res, {
+                    ...result,
+                    completion_status: completionStatus
+                });
             }
 
             // Normal path for arrived / in_process / partially_completed

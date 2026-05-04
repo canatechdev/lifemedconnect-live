@@ -4,7 +4,7 @@ const { getTechnicianIdByUser } = require('./s_app_appointments');
 
 /**
  * Dashboard counts for technician (mobile app)
- * total, today, assigned (active), rejected (pushed back)
+ * total, today, assigned (active), rejected (upcoming - label stays same for frontend)
  */
 async function getTechnicianDashboardCounts(userId) {
     try {
@@ -23,6 +23,8 @@ async function getTechnicianDashboardCounts(userId) {
             JOIN appointment_tests at ON a.id = at.appointment_id
             WHERE at.assigned_technician_id = ?
               AND a.is_deleted = 0
+              AND (a.pushed_back = 0 OR a.pushed_back IS NULL)
+              AND a.status != 'pushed_back'
         `;
 
         // Use home_confirmed_at for BOTH visits; confirmed_date otherwise
@@ -39,12 +41,17 @@ async function getTechnicianDashboardCounts(userId) {
             `, [technicianId]),
             db.query(`
                 SELECT COUNT(DISTINCT a.id) AS count ${baseConditions}
-                AND a.status NOT IN ('cancelled')
+                AND ${confirmDateExpr} IS NOT NULL
+                AND a.status NOT IN ('cancelled', 'completed', 'medical_completed')
                 AND (a.medical_status NOT IN ('completed', 'medical_completed') OR a.medical_status IS NULL)
+                AND (a.home_medical_status NOT IN ('completed', 'medical_completed') OR a.home_medical_status IS NULL)
             `, [technicianId]),
             db.query(`
                 SELECT COUNT(DISTINCT a.id) AS count ${baseConditions}
-                AND (COALESCE(a.pushed_back, 0) = 1 OR a.status IN ('pushed_back', 'qc_pushed_back'))
+                AND DATE(CONVERT_TZ(${confirmDateExpr}, '+00:00', '+05:30')) > DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+05:30'))
+                AND (a.medical_status NOT IN ('completed', 'medical_completed') OR a.medical_status IS NULL)
+                AND (a.home_medical_status NOT IN ('completed', 'medical_completed') OR a.home_medical_status IS NULL)
+                AND a.status NOT IN ('completed', 'medical_completed', 'cancelled')
             `, [technicianId])
         ]);
 
