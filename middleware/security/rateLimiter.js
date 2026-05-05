@@ -83,7 +83,7 @@ const strictLimiter = rateLimit({
 const uploadLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
     // max: 30, // 30 uploads (increased from 20)
-     max: 30000, // for now
+     max: 100000, // for now
     message: { 
         status: 'error', 
         message: 'Too many file uploads. Please try again later.' 
